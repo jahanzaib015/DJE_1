@@ -29,3 +29,6 @@ requests==2.31.0
 
 # PDF processing (avoiding problematic packages)
 PyPDF2==3.0.1
+
+gunicorn==21.2.0
+
