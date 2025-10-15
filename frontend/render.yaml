@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ocrd-extractor-frontend
+    env: static
+    plan: free
+    buildCommand: |
+      npm install
+      npm run build
+    staticPublishPath: ./build
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://your-backend-url.onrender.com
