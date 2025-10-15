@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCRD Extractor - Modern Document Analysis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <style>
+        .drag-over {
+            border-color: #3B82F6;
+            background-color: #EBF8FF;
+        }
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div x-data="ocrdApp()" class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center py-4">
+                    <div class="flex items-center">
+                        <h1 class="text-2xl font-bold text-gray-900">📄 OCRD Extractor</h1>
+                        <span class="ml-2 px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">Modern</span>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button @click="toggleSettings" class="p-2 text-gray-400 hover:text-gray-600">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                <!-- Settings Sidebar -->
+                <div x-show="showSettings" x-transition class="lg:col-span-1">
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h3 class="text-lg font-semibold text-gray-900 mb-4">Settings</h3>
+                        
+                        <!-- Analysis Method -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Analysis Method</label>
+                            <select x-model="settings.analysisMethod" class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="keywords">⚡ Fast Keywords</option>
+                                <option value="llm">🤖 LLM Only</option>
+                                <option value="llm_with_fallback">🔄 LLM with Fallback</option>
+                            </select>
+                        </div>
+
+                        <!-- LLM Provider -->
+                        <div x-show="settings.analysisMethod !== 'keywords'" class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">LLM Provider</label>
+                            <select x-model="settings.llmProvider" class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="openai">OpenAI (ChatGPT)</option>
+                                <option value="ollama">Ollama (Local)</option>
+                            </select>
+                        </div>
+
+                        <!-- Model Selection -->
+                        <div x-show="settings.analysisMethod !== 'keywords'" class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Model</label>
+                            <select x-model="settings.model" class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <template x-for="model in availableModels" :key="model">
+                                    <option :value="model" x-text="model"></option>
+                                </template>
+                            </select>
+                        </div>
+
+                        <!-- Fund ID -->
+                        <div class="mb-6">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Fund ID</label>
+                            <input x-model="settings.fundId" type="text" class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="5800">
+                        </div>
+
+                        <!-- Test Connection -->
+                        <div x-show="settings.analysisMethod !== 'keywords'" class="mb-6">
+                            <button @click="testConnection" :disabled="testing" class="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 disabled:opacity-50">
+                                <span x-show="!testing">Test Connection</span>
+                                <span x-show="testing">Testing...</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Content -->
+                <div class="lg:col-span-3">
+                    <!-- File Upload -->
+                    <div class="bg-white rounded-lg shadow mb-8">
+                        <div class="p-6">
+                            <h2 class="text-xl font-semibold text-gray-900 mb-4">Upload Document</h2>
+                            
+                            <!-- Drag & Drop Zone -->
+                            <div 
+                                @dragover.prevent="dragOver = true"
+                                @dragleave.prevent="dragOver = false"
+                                @drop.prevent="handleFileDrop($event)"
+                                :class="dragOver ? 'drag-over' : ''"
+                                class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors"
+                            >
+                                <div x-show="!uploadedFile">
+                                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                                        <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                    <p class="mt-2 text-sm text-gray-600">Drag and drop your PDF here, or</p>
+                                    <input type="file" @change="handleFileSelect($event)" accept=".pdf" class="hidden" id="file-input">
+                                    <label for="file-input" class="mt-2 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-600 bg-blue-100 hover:bg-blue-200 cursor-pointer">
+                                        Choose File
+                                    </label>
+                                </div>
+                                
+                                <div x-show="uploadedFile" class="text-left">
+                                    <div class="flex items-center justify-between">
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-900" x-text="uploadedFile.name"></p>
+                                            <p class="text-sm text-gray-500" x-text="formatFileSize(uploadedFile.size)"></p>
+                                        </div>
+                                        <button @click="removeFile" class="text-red-600 hover:text-red-800">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Upload Button -->
+                            <div x-show="uploadedFile" class="mt-4">
+                                <button @click="uploadFile" :disabled="uploading" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50">
+                                    <span x-show="!uploading">Upload & Analyze</span>
+                                    <span x-show="uploading">Uploading...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Progress -->
+                    <div x-show="currentJob" class="bg-white rounded-lg shadow mb-8">
+                        <div class="p-6">
+                            <h3 class="text-lg font-semibold text-gray-900 mb-4">Processing Status</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <div class="flex justify-between text-sm text-gray-600 mb-1">
+                                        <span x-text="jobStatus.message"></span>
+                                        <span x-text="jobStatus.progress + '%'"></span>
+                                    </div>
+                                    <div class="w-full bg-gray-200 rounded-full h-2">
+                                        <div class="bg-blue-600 h-2 rounded-full progress-bar" :style="'width: ' + jobStatus.progress + '%'"></div>
+                                    </div>
+                                </div>
+                                <div x-show="jobStatus.status === 'failed'" class="text-red-600 text-sm" x-text="jobStatus.error"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Results -->
+                    <div x-show="results" class="bg-white rounded-lg shadow">
+                        <div class="p-6">
+                            <div class="flex justify-between items-center mb-6">
+                                <h3 class="text-lg font-semibold text-gray-900">Analysis Results</h3>
+                                <div class="flex space-x-2">
+                                    <button @click="exportExcel" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">
+                                        📊 Export Excel
+                                    </button>
+                                    <button @click="exportJson" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">
+                                        📄 Export JSON
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Metrics -->
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                                <div class="bg-gray-50 p-4 rounded-lg">
+                                    <div class="text-2xl font-bold text-gray-900" x-text="results.total_instruments"></div>
+                                    <div class="text-sm text-gray-600">Total Instruments</div>
+                                </div>
+                                <div class="bg-green-50 p-4 rounded-lg">
+                                    <div class="text-2xl font-bold text-green-600" x-text="results.allowed_instruments"></div>
+                                    <div class="text-sm text-gray-600">Allowed</div>
+                                </div>
+                                <div class="bg-blue-50 p-4 rounded-lg">
+                                    <div class="text-2xl font-bold text-blue-600" x-text="results.evidence_coverage + '%'"></div>
+                                    <div class="text-sm text-gray-600">Evidence Coverage</div>
+                                </div>
+                                <div class="bg-purple-50 p-4 rounded-lg">
+                                    <div class="text-2xl font-bold text-purple-600" x-text="results.processing_time + 's'"></div>
+                                    <div class="text-sm text-gray-600">Processing Time</div>
+                                </div>
+                            </div>
+
+                            <!-- Results Table -->
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Section</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Instrument</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Allowed</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Note</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidence</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        <template x-for="[section, items] in Object.entries(results.sections)" :key="section">
+                                            <template x-for="[key, value] in Object.entries(items)" :key="key">
+                                                <tr x-show="key !== 'special_other_restrictions'">
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" x-text="section"></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="key"></td>
+                                                    <td class="px-6 py-4 whitespace-nowrap">
+                                                        <span x-show="value.allowed" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                            ✓ Allowed
+                                                        </span>
+                                                        <span x-show="!value.allowed" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                                                            ✗ Not Allowed
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-6 py-4 text-sm text-gray-900" x-text="value.note"></td>
+                                                    <td class="px-6 py-4 text-sm text-gray-900" x-text="value.evidence.text"></td>
+                                                </tr>
+                                            </template>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function ocrdApp() {
+            return {
+                // State
+                showSettings: true,
+                dragOver: false,
+                uploadedFile: null,
+                uploading: false,
+                testing: false,
+                currentJob: null,
+                jobStatus: { progress: 0, message: '', status: '' },
+                results: null,
+                websocket: null,
+                
+                // Settings
+                settings: {
+                    analysisMethod: 'llm_with_fallback',
+                    llmProvider: 'openai',
+                    model: 'gpt-4',
+                    fundId: '5800'
+                },
+                
+                availableModels: ['gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo'],
+                
+                // Methods
+                toggleSettings() {
+                    this.showSettings = !this.showSettings;
+                },
+                
+                handleFileSelect(event) {
+                    const file = event.target.files[0];
+                    if (file && file.type === 'application/pdf') {
+                        this.uploadedFile = file;
+                    } else {
+                        alert('Please select a PDF file');
+                    }
+                },
+                
+                handleFileDrop(event) {
+                    this.dragOver = false;
+                    const file = event.dataTransfer.files[0];
+                    if (file && file.type === 'application/pdf') {
+                        this.uploadedFile = file;
+                    } else {
+                        alert('Please drop a PDF file');
+                    }
+                },
+                
+                removeFile() {
+                    this.uploadedFile = null;
+                },
+                
+                formatFileSize(bytes) {
+                    if (bytes === 0) return '0 Bytes';
+                    const k = 1024;
+                    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                },
+                
+                async uploadFile() {
+                    if (!this.uploadedFile) return;
+                    
+                    this.uploading = true;
+                    
+                    try {
+                        // Upload file
+                        const formData = new FormData();
+                        formData.append('file', this.uploadedFile);
+                        
+                        const uploadResponse = await fetch('/api/upload', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (!uploadResponse.ok) {
+                            throw new Error('Upload failed');
+                        }
+                        
+                        const uploadData = await uploadResponse.json();
+                        
+                        // Start analysis
+                        const analysisResponse = await fetch('/api/analyze', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                file_path: uploadData.file_path,
+                                analysis_method: this.settings.analysisMethod,
+                                llm_provider: this.settings.llmProvider,
+                                model: this.settings.model,
+                                fund_id: this.settings.fundId
+                            })
+                        });
+                        
+                        if (!analysisResponse.ok) {
+                            throw new Error('Analysis failed to start');
+                        }
+                        
+                        const analysisData = await analysisResponse.json();
+                        this.currentJob = analysisData.job_id;
+                        
+                        // Connect to WebSocket for real-time updates
+                        this.connectWebSocket(analysisData.job_id);
+                        
+                    } catch (error) {
+                        alert('Error: ' + error.message);
+                    } finally {
+                        this.uploading = false;
+                    }
+                },
+                
+                connectWebSocket(jobId) {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/jobs/${jobId}`;
+                    
+                    this.websocket = new WebSocket(wsUrl);
+                    
+                    this.websocket.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        this.jobStatus = data;
+                        
+                        if (data.status === 'completed') {
+                            this.getResults(jobId);
+                        } else if (data.status === 'failed') {
+                            this.currentJob = null;
+                        }
+                    };
+                },
+                
+                async getResults(jobId) {
+                    try {
+                        const response = await fetch(`/api/jobs/${jobId}/results`);
+                        if (response.ok) {
+                            this.results = await response.json();
+                        }
+                    } catch (error) {
+                        console.error('Failed to get results:', error);
+                    }
+                },
+                
+                async testConnection() {
+                    this.testing = true;
+                    try {
+                        const response = await fetch('/api/health');
+                        if (response.ok) {
+                            alert('Connection successful!');
+                        } else {
+                            alert('Connection failed');
+                        }
+                    } catch (error) {
+                        alert('Connection failed: ' + error.message);
+                    } finally {
+                        this.testing = false;
+                    }
+                },
+                
+                async exportExcel() {
+                    if (!this.currentJob) return;
+                    
+                    try {
+                        const response = await fetch(`/api/jobs/${this.currentJob}/export/excel`);
+                        if (response.ok) {
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'ocrd_results.xlsx';
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                        }
+                    } catch (error) {
+                        alert('Export failed: ' + error.message);
+                    }
+                },
+                
+                async exportJson() {
+                    if (!this.results) return;
+                    
+                    try {
+                        const blob = new Blob([JSON.stringify(this.results, null, 2)], { type: 'application/json' });
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'ocrd_results.json';
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                    } catch (error) {
+                        alert('Export failed: ' + error.message);
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
