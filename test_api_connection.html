@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Connection Test</title>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <button onclick="testUpload()">Test Upload API</button>
+    <div id="result"></div>
+
+    <script>
+        async function testUpload() {
+            const resultDiv = document.getElementById('result');
+            try {
+                // Test the upload endpoint
+                const formData = new FormData();
+                const blob = new Blob(['test content'], { type: 'application/pdf' });
+                formData.append('file', blob, 'test.pdf');
+                
+                const response = await fetch('http://localhost:8000/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.innerHTML = `<p style="color: green;">✅ Upload API is working: ${JSON.stringify(data)}</p>`;
+                } else {
+                    resultDiv.innerHTML = `<p style="color: red;">❌ Upload API error: ${response.status} ${response.statusText}</p>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p style="color: red;">❌ Connection error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Ultra-simple requirements for Render (no version pinning)
+fastapi
+uvicorn[standard]
+python-multipart
+aiofiles
+httpx
+openai
+jinja2
+python-dotenv
+websockets
+requests
+PyPDF2

@@ -1,0 +1,20 @@
+# Simple requirements that work on Windows without compilation
+fastapi
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+aiofiles
+httpx
+openai
+pydantic
+pydantic-settings
+jinja2
+python-dotenv
+openpyxl
+websockets
+pandas
+PyPDF2
+pdfminer.six
+flask
+requests

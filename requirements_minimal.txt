@@ -1,0 +1,33 @@
+# Minimal requirements for OCRD Extractor
+# This avoids packages that require compilation
+
+# Core FastAPI dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+aiofiles==23.2.1
+httpx==0.25.2
+
+# LLM and AI
+openai==1.3.7
+
+# Data validation and settings
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Additional web frameworks and HTTP clients
+flask==2.3.3
+requests==2.31.0
+
+# Data processing
+pandas==2.0.3
+openpyxl==3.1.2
+PyPDF2==3.0.1
+pdfminer.six==20221105
+
+# Utilities
+jinja2==3.1.2
+python-dotenv==1.0.0
+websockets==12.0
