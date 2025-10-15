@@ -1,0 +1,10 @@
+.vercel
+node_modules
+node_modules/
+__pycache__/
+.venv/
+*.pyc
+node_modules/
+__pycache__/
+.venv/
+*.pyc
