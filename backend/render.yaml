@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: ocrd-extractor-backend
+    env: python
+    plan: free
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: |
+      cd backend && python run.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 8000
+      - key: DEBUG
+        value: "False"
+      - key: MAX_FILE_SIZE
+        value: 50MB
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: EXPORT_DIR
+        value: exports
+      - key: DEFAULT_LLM_PROVIDER
+        value: openai
+      - key: DEFAULT_MODEL
+        value: gpt-4
+      - key: DEFAULT_ANALYSIS_METHOD
+        value: llm_with_fallback
