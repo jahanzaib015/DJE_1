@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: ocrd-extractor-node-backend
+    env: node
+    plan: free
+    buildCommand: |
+      npm install
+      cd frontend && npm install && npm run build
+    startCommand: |
+      node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
+      - key: PORT
+        value: 3000
+      - key: PYTHON_BACKEND_URL
+        value: https://dje-1-3.onrender.com
+      - key: NODE_ENV
+        value: production

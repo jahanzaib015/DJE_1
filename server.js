@@ -11,19 +11,21 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'https://dje-1-3.onrender.com';
 
 // Middleware
 app.use(helmet());
 app.use(compression());
 app.use(cors({
   origin: [
-    "https://dje-1-4.onrender.com",   // your React frontend on Render
-    "http://localhost:3000"           // for local dev testing
+    "https://dje-1-4.onrender.com",   // Frontend domain
+    "http://localhost:3000",          // For local dev
+    "https://dje-1-3.onrender.com"   // Python backend domain
   ],
   methods: ["GET", "POST", "OPTIONS"],
   credentials: true
 }));
+
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -180,7 +182,10 @@ wss.on('connection', (ws, req) => {
   const jobId = url.pathname.split('/').pop();
   
   // Connect to Python backend WebSocket
-  const backendWs = new WebSocket(`ws://localhost:8000/ws/jobs/${jobId}`);
+  const backendWs = new WebSocket(
+    `${PYTHON_BACKEND_URL.replace('http', 'ws')}/ws/jobs/${jobId}`
+  );
+  
   
   backendWs.on('message', (data) => {
     ws.send(data);
