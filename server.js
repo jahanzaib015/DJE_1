@@ -16,7 +16,15 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8
 // Middleware
 app.use(helmet());
 app.use(compression());
-app.use(cors());
+app.use(cors({
+  origin: [
+    "https://dje-1-4.onrender.com",   // your React frontend on Render
+    "http://localhost:3000"           // for local dev testing
+  ],
+  methods: ["GET", "POST", "OPTIONS"],
+  credentials: true
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
