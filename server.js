@@ -72,6 +72,23 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Test Python backend health
+app.get('/api/health/backend', async (req, res) => {
+  console.log('Backend health check requested');
+  try {
+    const response = await axios.get(`${PYTHON_BACKEND_URL}/health`);
+    console.log('Backend health response:', response.data);
+    res.json(response.data);
+  } catch (error) {
+    console.error('Backend health check failed:', error.message);
+    res.status(500).json({ 
+      error: 'Backend health check failed',
+      backend: PYTHON_BACKEND_URL,
+      details: error.message
+    });
+  }
+});
+
 // Get available models
 app.get('/api/models', async (req, res) => {
   try {
@@ -200,15 +217,22 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Serve React app for all other routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
-});
-
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Server error:', error);
   res.status(500).json({ error: 'Internal server error' });
+});
+
+// Serve React app for all other routes (but not API routes)
+app.get('*', (req, res) => {
+  console.log('Catch-all route hit:', req.path, req.method);
+  // Don't serve React app for API routes
+  if (req.path.startsWith('/api/')) {
+    console.log('API route not found:', req.path);
+    return res.status(404).json({ error: 'API endpoint not found' });
+  }
+  console.log('Serving React app for:', req.path);
+  res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
 });
 
 app.listen(PORT, () => {

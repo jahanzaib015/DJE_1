@@ -6,6 +6,8 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://dje-node-backend.
 export class AnalysisService {
   static async uploadFile(file: File) {
     console.log('Uploading file to:', `${API_BASE_URL}/api/upload`);
+    console.log('File details:', { name: file.name, size: file.size, type: file.type });
+    
     const formData = new FormData();
     formData.append('file', file);
     
@@ -13,6 +15,11 @@ export class AnalysisService {
       const response = await axios.post(`${API_BASE_URL}/api/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
+        },
+        timeout: 60000, // 60 second timeout for large files
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log(`Upload progress: ${percentCompleted}%`);
         }
       });
       
@@ -20,7 +27,16 @@ export class AnalysisService {
       return response.data;
     } catch (error) {
       console.error('Upload error:', error);
-      throw error;
+      if (error.response) {
+        // Server responded with error status
+        throw new Error(`Upload failed: ${error.response.data?.error || error.response.statusText}`);
+      } else if (error.request) {
+        // Request was made but no response received
+        throw new Error('Upload failed: No response from server. Please check your connection.');
+      } else {
+        // Something else happened
+        throw new Error(`Upload failed: ${error.message}`);
+      }
     }
   }
 
@@ -29,12 +45,23 @@ export class AnalysisService {
     console.log('Analysis URL:', `${API_BASE_URL}/api/analyze`);
     
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/analyze`, request);
+      const response = await axios.post(`${API_BASE_URL}/api/analyze`, request, {
+        timeout: 30000, // 30 second timeout
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
       console.log('Analysis response:', response.data);
       return response.data;
     } catch (error) {
       console.error('Analysis error:', error);
-      throw error;
+      if (error.response) {
+        throw new Error(`Analysis failed: ${error.response.data?.error || error.response.statusText}`);
+      } else if (error.request) {
+        throw new Error('Analysis failed: No response from server. Please check your connection.');
+      } else {
+        throw new Error(`Analysis failed: ${error.message}`);
+      }
     }
   }
 
@@ -83,7 +110,23 @@ export class AnalysisService {
   }
 
   static async testConnection() {
-    const response = await axios.get(`${API_BASE_URL}/api/health`);
-    return response.data;
+    try {
+      // Test Node.js backend first
+      const nodeResponse = await axios.get(`${API_BASE_URL}/api/health`);
+      console.log('Node.js backend health:', nodeResponse.data);
+      
+      // Test Python backend through Node.js proxy
+      const pythonResponse = await axios.get(`${API_BASE_URL}/api/health/backend`);
+      console.log('Python backend health:', pythonResponse.data);
+      
+      return {
+        nodejs: nodeResponse.data,
+        python: pythonResponse.data,
+        status: 'connected'
+      };
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      throw new Error(`Connection test failed: ${error.response?.data?.error || error.message}`);
+    }
   }
 }
