@@ -83,7 +83,7 @@ export class AnalysisService {
   }
 
   static async testConnection() {
-    const response = await axios.get(`${API_BASE_URL}/health`);
+    const response = await axios.get(`${API_BASE_URL}/api/health`);
     return response.data;
   }
 }

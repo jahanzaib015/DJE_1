@@ -6,6 +6,7 @@ const WebSocket = require('ws');
 const helmet = require('helmet');
 const compression = require('compression');
 const path = require('path');
+const FormData = require('form-data');
 require('dotenv').config();
 
 const app = express();
@@ -88,7 +89,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     const response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
       headers: {
-        'Content-Type': 'multipart/form-data'
+        ...formData.getHeaders()
       }
     });
 
