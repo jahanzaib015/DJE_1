@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { AnalysisRequest, JobStatus, AnalysisResult } from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || (process.env.NODE_ENV === 'production' ? '' : 'https://dje-1-3.onrender.com');
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://dje-node-backend.onrender.com';
 
 export class AnalysisService {
   static async uploadFile(file: File) {
