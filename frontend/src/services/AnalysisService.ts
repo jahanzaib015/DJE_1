@@ -27,7 +27,7 @@ export class AnalysisService {
       
       console.log('Upload response:', response.data);
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Upload error:', error);
       if (error.response) {
         // Server responded with error status
@@ -55,7 +55,7 @@ export class AnalysisService {
       });
       console.log('Analysis response:', response.data);
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Analysis error:', error);
       if (error.response) {
         throw new Error(`Analysis failed: ${error.response.data?.error || error.response.statusText}`);
@@ -126,7 +126,7 @@ export class AnalysisService {
         python: pythonResponse.data,
         status: 'connected'
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Connection test failed:', error);
       throw new Error(`Connection test failed: ${error.response?.data?.error || error.message}`);
     }
