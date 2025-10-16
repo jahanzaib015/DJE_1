@@ -18,8 +18,10 @@ export class AnalysisService {
         },
         timeout: 60000, // 60 second timeout for large files
         onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          console.log(`Upload progress: ${percentCompleted}%`);
+          if (progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            console.log(`Upload progress: ${percentCompleted}%`);
+          }
         }
       });
       
