@@ -117,8 +117,8 @@ export class AnalysisService {
       const nodeResponse = await axios.get(`${API_BASE_URL}/api/health`);
       console.log('Node.js backend health:', nodeResponse.data);
       
-      // Test Python backend through Node.js proxy
-      const pythonResponse = await axios.get(`${API_BASE_URL}/api/health/backend`);
+      // Test Python backend directly (bypassing Node.js proxy for now)
+      const pythonResponse = await axios.get('https://dje-1-3.onrender.com/health');
       console.log('Python backend health:', pythonResponse.data);
       
       return {
