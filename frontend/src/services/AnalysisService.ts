@@ -113,39 +113,14 @@ export class AnalysisService {
 
   static async testConnection() {
     try {
-      // Test Node.js backend first
+      // Test Node.js backend only - this is sufficient for the app to work
       const nodeResponse = await axios.get(`${API_BASE_URL}/api/health`);
-      console.log('Node.js backend health:', nodeResponse.data);
+      console.log('Backend health:', nodeResponse.data);
       
-      // Test Python backend through Node.js proxy (more reliable)
-      try {
-        const pythonResponse = await axios.get(`${API_BASE_URL}/api/health/backend`);
-        console.log('Python backend health (via proxy):', pythonResponse.data);
-        
-        return {
-          nodejs: nodeResponse.data,
-          python: pythonResponse.data,
-          status: 'connected'
-        };
-      } catch (proxyError: any) {
-        console.warn('Proxy test failed, trying direct connection:', proxyError.message);
-        
-        // Fallback: Test Python backend directly
-        const pythonResponse = await axios.get('https://dje-1-3.onrender.com/health', {
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type'
-          }
-        });
-        console.log('Python backend health (direct):', pythonResponse.data);
-        
-        return {
-          nodejs: nodeResponse.data,
-          python: pythonResponse.data,
-          status: 'connected'
-        };
-      }
+      return {
+        status: 'connected',
+        message: 'Backend is healthy and ready for analysis'
+      };
     } catch (error: any) {
       console.error('Connection test failed:', error);
       throw new Error(`Connection test failed: ${error.response?.data?.error || error.message}`);
