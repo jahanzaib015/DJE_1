@@ -23,6 +23,20 @@ function App() {
 
   const { connectWebSocket, disconnectWebSocket } = useWebSocket();
 
+  // Test backend connectivity on app load
+  useEffect(() => {
+    const test = async () => {
+      try {
+        await AnalysisService.testConnection();
+        console.log('Initial connection test successful');
+      } catch (error) {
+        console.error('Initial connection test failed:', error);
+        alert('Connection test failed: ' + (error as Error).message);
+      }
+    };
+    test();
+  }, []);
+
   useEffect(() => {
     if (currentJob) {
       connectWebSocket(currentJob, (status) => {

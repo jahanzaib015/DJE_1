@@ -26,7 +26,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # Wildcard origins cannot be used with credentials
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,6 +71,11 @@ async def read_root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+# Backward-compatible health endpoint under /api
+@app.get("/api/health")
+async def health_check_api():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 @app.get("/api/models")

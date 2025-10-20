@@ -10,7 +10,9 @@ export const useWebSocket = () => {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.hostname}:8080/ws/jobs/${jobId}`;
+    const port = process.env.REACT_APP_WS_PORT || '8000';
+    const host = process.env.REACT_APP_WS_HOST || window.location.hostname;
+    const wsUrl = `${protocol}//${host}:${port}/ws/jobs/${jobId}`;
     
     const ws = new WebSocket(wsUrl);
     
