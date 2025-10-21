@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 const path = require('path');
 const FormData = require('form-data');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -16,6 +17,7 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'https://dje-1-3.on
 // Middleware
 app.use(helmet());
 app.use(compression());
+
 const allowedOrigins = [
   "https://dje-1-4.onrender.com",
   "http://localhost:3000"
@@ -35,13 +37,16 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-
-
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Serve static files from React build
 app.use(express.static(path.join(__dirname, 'frontend/build')));
+
+// Ensure uploads directory exists
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads');
+}
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -53,7 +58,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'application/pdf') {
@@ -67,16 +72,10 @@ const upload = multer({
   }
 });
 
-// Ensure uploads directory exists
-const fs = require('fs');
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
-
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     timestamp: new Date().toISOString(),
     backend: PYTHON_BACKEND_URL
   });
@@ -91,7 +90,7 @@ app.get('/api/health/backend', async (req, res) => {
     res.json(response.data);
   } catch (error) {
     console.error('Backend health check failed:', error.message);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Backend health check failed',
       backend: PYTHON_BACKEND_URL,
       details: error.message
@@ -110,14 +109,16 @@ app.get('/api/models', async (req, res) => {
   }
 });
 
-// File upload endpoint
+// ✅ FIXED: File upload endpoint (Render-compatible)
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Forward to Python backend
+    console.log('📤 Forwarding upload to Python backend:', PYTHON_BACKEND_URL);
+    console.log('📄 File details:', req.file.originalname, req.file.size, req.file.mimetype);
+
     const formData = new FormData();
     formData.append('file', fs.createReadStream(req.file.path), {
       filename: req.file.originalname,
@@ -125,18 +126,25 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     });
 
     const response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
-      headers: {
-        ...formData.getHeaders()
-      }
+      headers: formData.getHeaders(),
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity, // prevent truncation
+      timeout: 60000 // 60s timeout
     });
 
-    // Clean up local file
+    // ✅ Clean up temp file
     fs.unlinkSync(req.file.path);
 
+    console.log('✅ Upload success:', response.data);
     res.json(response.data);
   } catch (error) {
-    console.error('Upload error:', error.message);
-    res.status(500).json({ error: 'Upload failed' });
+    console.error('❌ Upload proxy error:', error.message);
+    if (error.response) {
+      console.error('Backend error details:', error.response.data);
+      res.status(error.response.status).json({ error: error.response.data });
+    } else {
+      res.status(500).json({ error: 'Upload failed' });
+    }
   }
 });
 
@@ -179,10 +187,8 @@ app.get('/api/jobs/:jobId/export/excel', async (req, res) => {
     const response = await axios.get(`${PYTHON_BACKEND_URL}/api/jobs/${req.params.jobId}/export/excel`, {
       responseType: 'stream'
     });
-    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=ocrd_results.xlsx');
-    
     response.data.pipe(res);
   } catch (error) {
     console.error('Export error:', error.message);
@@ -207,24 +213,14 @@ const wss = new WebSocket.Server({ port: 8080 });
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const jobId = url.pathname.split('/').pop();
-  
-  // Connect to Python backend WebSocket
+
   const backendWs = new WebSocket(
     `${PYTHON_BACKEND_URL.replace('http', 'ws')}/ws/jobs/${jobId}`
   );
-  
-  
-  backendWs.on('message', (data) => {
-    ws.send(data);
-  });
-  
-  backendWs.on('close', () => {
-    ws.close();
-  });
-  
-  ws.on('close', () => {
-    backendWs.close();
-  });
+
+  backendWs.on('message', (data) => ws.send(data));
+  backendWs.on('close', () => ws.close());
+  ws.on('close', () => backendWs.close());
 });
 
 // Error handling middleware
@@ -233,10 +229,9 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Serve React app for all other routes (but not API routes)
+// Serve React app for all non-API routes
 app.get('*', (req, res) => {
   console.log('Catch-all route hit:', req.path, req.method);
-  // Don't serve React app for API routes
   if (req.path.startsWith('/api/')) {
     console.log('API route not found:', req.path);
     return res.status(404).json({ error: 'API endpoint not found' });
