@@ -114,7 +114,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       console.log('✅ Python backend is awake');
     } catch (err) {
       console.log('⚠️ Python backend unreachable before upload:', err.message);
-      return res.status(502).json({ error: 'Python backend not reachable from Node' });
+      console.log('⚠️ Continuing with upload anyway - backend may wake up during processing');
+      // Don't return error - let the upload proceed and let the backend wake up naturally
     }
 
     // ✅ Read file into buffer instead of stream
