@@ -112,9 +112,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
       await axios.get(`${PYTHON_BACKEND_URL}/api/health`, { timeout: 5000 });
       console.log('✅ Python backend is awake');
-    } catch {
-      console.log('⚠️ Backend may still be starting, retrying shortly...');
-      await new Promise(r => setTimeout(r, 5000));
+    } catch (err) {
+      console.log('⚠️ Python backend unreachable before upload:', err.message);
+      return res.status(502).json({ error: 'Python backend not reachable from Node' });
     }
 
     // ✅ Read file into buffer instead of stream
