@@ -109,7 +109,7 @@ app.get('/api/models', async (req, res) => {
   }
 });
 
-// ✅ FIXED: File upload endpoint (Render-compatible)
+// ✅ FIXED: File upload endpoint with wake-up + retry logic
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -119,18 +119,44 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     console.log('📤 Forwarding upload to Python backend:', PYTHON_BACKEND_URL);
     console.log('📄 File details:', req.file.originalname, req.file.size, req.file.mimetype);
 
+    // 💤 Wake backend before upload (Render free-tier workaround)
+    try {
+      await axios.get(`${PYTHON_BACKEND_URL}/api/health`);
+      console.log('✅ Python backend is awake');
+    } catch {
+      console.log('⚠️ Python backend still waking up...');
+    }
+
     const formData = new FormData();
     formData.append('file', fs.createReadStream(req.file.path), {
       filename: req.file.originalname,
       contentType: req.file.mimetype
     });
 
-    const response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
-      headers: formData.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity, // prevent truncation
-      timeout: 60000 // 60s timeout
-    });
+    let response;
+    try {
+      // First upload attempt
+      response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        timeout: 60000
+      });
+    } catch (error) {
+      // Retry once if backend returns 502 (cold start)
+      if (error.response?.status === 502) {
+        console.log('🔁 Retrying upload after backend wake-up...');
+        await new Promise(r => setTimeout(r, 5000)); // wait 5 seconds
+        response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
+          headers: formData.getHeaders(),
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          timeout: 60000
+        });
+      } else {
+        throw error;
+      }
+    }
 
     // ✅ Clean up temp file
     fs.unlinkSync(req.file.path);
