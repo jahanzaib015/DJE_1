@@ -16,15 +16,25 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'https://dje-1-3.on
 // Middleware
 app.use(helmet());
 app.use(compression());
+const allowedOrigins = [
+  "https://dje-1-4.onrender.com",
+  "http://localhost:3000"
+];
+
 app.use(cors({
-  origin: [
-    "https://dje-1-4.onrender.com",   // Frontend domain
-    "http://localhost:3000",          // For local dev
-    "https://dje-1-3.onrender.com"   // Python backend domain
-  ],
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log("Blocked by CORS:", origin);
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "OPTIONS"],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
+
 
 
 app.use(express.json({ limit: '50mb' }));
