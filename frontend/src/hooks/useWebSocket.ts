@@ -8,10 +8,10 @@ export const useWebSocket = () => {
     if (connections.current.has(jobId)) {
       return;
     }
-
+    const baseHost = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const port = process.env.REACT_APP_WS_PORT || '8000';
-    const host = process.env.REACT_APP_WS_HOST || window.location.hostname;
+   // const port = process.env.REACT_APP_WS_PORT || '8000';
+    //const host = process.env.REACT_APP_WS_HOST || window.location.hostname;
     const wsUrl = `${protocol}//dje-1-3.onrender.com/ws/jobs/${jobId}`;
 
     const ws = new WebSocket(wsUrl);
