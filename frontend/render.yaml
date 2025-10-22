@@ -9,4 +9,4 @@ services:
     staticPublishPath: ./build
     envVars:
       - key: REACT_APP_API_URL
-        value: https://your-backend-url.onrender.com
+        value: https://ocrd-extractor-node-backend.onrender.com
