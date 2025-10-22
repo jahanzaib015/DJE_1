@@ -15,10 +15,13 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
     const fetchModels = async () => {
       try {
         const models = await AnalysisService.getAvailableModels();
-        setAvailableModels(models.openai_models || ['gpt-4', 'gpt-3.5-turbo']);
+        // ✅ updated: include new OpenAI models, fallback to gpt-4o-mini
+        setAvailableModels(
+          models.openai_models || ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']
+        );
       } catch (error) {
         console.error('Failed to fetch models:', error);
-        setAvailableModels(['gpt-4', 'gpt-3.5-turbo']);
+        setAvailableModels(['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']);
       }
     };
 
@@ -59,9 +62,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
             })}
             className="w-full border-2 border-yellow-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 bg-yellow-50 text-gray-800 font-medium"
           >
-            {/* <option value="keywords">⚡ Fast Keywords</option> COMMENTED OUT: Only using OpenAI for now */}
             <option value="llm">🤖 OpenAI Analysis</option>
-            {/* <option value="llm_with_fallback">🔄 LLM with Fallback</option> COMMENTED OUT: Only using OpenAI for now */}
           </select>
         </div>
 
@@ -80,7 +81,6 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
               className="w-full border-2 border-yellow-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 bg-yellow-50 text-gray-800 font-medium"
             >
               <option value="openai">OpenAI (ChatGPT)</option>
-              {/* <option value="ollama">Ollama (Local)</option> COMMENTED OUT: Only using OpenAI for now */}
             </select>
           </div>
         )}
@@ -144,4 +144,5 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
     </div>
   );
 };
-export default Settings
+
+export default Settings;
