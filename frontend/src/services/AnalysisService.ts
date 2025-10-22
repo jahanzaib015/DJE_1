@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { AnalysisRequest, JobStatus, AnalysisResult } from '../types';
 
-const API_BASE_URL = 'https://dje-node-backend.onrender.com';
+const API_BASE_URL = 'https://ocrd-extractor-node-backend.onrender.com';
 
 export class AnalysisService {
   static async uploadFile(file: File) {
