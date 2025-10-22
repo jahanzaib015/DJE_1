@@ -4,7 +4,7 @@ import Settings from './components/Settings';
 import Progress from './components/Progress';
 import Results from './components/Results';
 import Header from './components/Header';
-import { useWebSocket } from './hooks/useWebSocket';
+import { usePolling } from './hooks/usePolling';
 import { AnalysisService } from './services/AnalysisService';
 import { JobStatus, AnalysisResult, Settings as SettingsType } from './types';
 
@@ -21,9 +21,7 @@ function App() {
     fundId: '5800'
   });
 
-  const { connectWebSocket, disconnectWebSocket } = useWebSocket();
-
-  // Test backend connectivity on app load
+  // ✅ Test backend connectivity on app load
   useEffect(() => {
     const test = async () => {
       try {
@@ -37,22 +35,13 @@ function App() {
     test();
   }, []);
 
-  useEffect(() => {
-    if (currentJob) {
-      connectWebSocket(currentJob, (status) => {
-        setJobStatus(status);
-        if (status.status === 'completed') {
-          fetchResults(currentJob);
-        }
-      });
+  // ✅ Polling instead of WebSocket
+  usePolling(currentJob, (status) => {
+    setJobStatus(status);
+    if (status.status === 'completed') {
+      fetchResults(currentJob!);
     }
-
-    return () => {
-      if (currentJob) {
-        disconnectWebSocket(currentJob);
-      }
-    };
-  }, [currentJob, connectWebSocket, disconnectWebSocket]);
+  });
 
   const fetchResults = async (jobId: string) => {
     try {
@@ -80,6 +69,8 @@ function App() {
       });
       
       setCurrentJob(analysisResponse.job_id);
+      setJobStatus({ job_id: analysisResponse.job_id, status: 'queued', progress: 0, message: 'Queued' });
+      setResults(null);
     } catch (error) {
       console.error('Upload failed:', error);
       alert('Upload failed: ' + (error as Error).message);
