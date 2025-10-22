@@ -17,7 +17,7 @@ function App() {
   const [settings, setSettings] = useState<SettingsType>({
     analysisMethod: 'llm_with_fallback',
     llmProvider: 'openai',
-    model: 'gpt-4',
+    model: 'gpt-4o-mini',
     fundId: '5800'
   });
 
