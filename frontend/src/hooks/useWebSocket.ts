@@ -5,17 +5,14 @@ export const useWebSocket = () => {
   const connections = useRef<Map<string, WebSocket>>(new Map());
 
   const connectWebSocket = useCallback((jobId: string, onMessage: (status: JobStatus) => void) => {
-    if (connections.current.has(jobId)) {
-      return;
-    }
-    const baseHost = window.location.host;
+    if (connections.current.has(jobId)) return;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-   // const port = process.env.REACT_APP_WS_PORT || '8000';
-    //const host = process.env.REACT_APP_WS_HOST || window.location.hostname;
     const wsUrl = `${protocol}//dje-1-3.onrender.com/ws/jobs/${jobId}`;
+    console.log('Connecting to WebSocket:', wsUrl); // 👈 add this for verification
 
     const ws = new WebSocket(wsUrl);
-    
+
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as JobStatus;
@@ -24,16 +21,17 @@ export const useWebSocket = () => {
         console.error('Failed to parse WebSocket message:', error);
       }
     };
-    
+
     ws.onclose = () => {
+      console.warn('WebSocket closed for job', jobId);
       connections.current.delete(jobId);
     };
-    
+
     ws.onerror = (error) => {
       console.error('WebSocket error:', error);
       connections.current.delete(jobId);
     };
-    
+
     connections.current.set(jobId, ws);
   }, []);
 
@@ -45,8 +43,5 @@ export const useWebSocket = () => {
     }
   }, []);
 
-  return {
-    connectWebSocket,
-    disconnectWebSocket
-  };
+  return { connectWebSocket, disconnectWebSocket };
 };
