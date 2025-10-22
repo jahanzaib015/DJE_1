@@ -12,22 +12,21 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   uploadedFile,
   onRemoveFile
 }) => {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading] = useState(false);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (file && file.type === 'application/pdf') {
-      onFileUpload(file);
+      setSelectedFile(file);
     } else {
       alert('Please select a PDF file');
     }
-  }, [onFileUpload]);
+  }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: {
-      'application/pdf': ['.pdf']
-    },
+    accept: { 'application/pdf': ['.pdf'] },
     multiple: false
   });
 
@@ -55,22 +54,8 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         }`}
       >
         <input {...getInputProps()} />
-        
-        {!uploadedFile ? (
+        {!selectedFile ? (
           <div>
-            <svg
-              className="mx-auto h-12 w-12 text-gray-400"
-              stroke="currentColor"
-              fill="none"
-              viewBox="0 0 48 48"
-            >
-              <path
-                d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
             <p className="mt-4 text-lg font-semibold text-gray-700">
               {isDragActive
                 ? '🎯 Drop the PDF here...'
@@ -85,37 +70,31 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-900">
-                  {uploadedFile.name}
+                  {selectedFile.name}
                 </p>
                 <p className="text-sm text-gray-500">
-                  {formatFileSize(uploadedFile.size)}
+                  {formatFileSize(selectedFile.size)}
                 </p>
               </div>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  setSelectedFile(null);
                   onRemoveFile();
                 }}
                 className="text-red-600 hover:text-red-800"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
+                ✖
               </button>
             </div>
           </div>
         )}
       </div>
 
-      {uploadedFile && (
+      {selectedFile && (
         <div className="mt-4">
           <button
-            onClick={() => onFileUpload(uploadedFile)}
+            onClick={() => onFileUpload(selectedFile)}
             disabled={isUploading}
             className="w-full bg-gradient-to-r from-yellow-500 to-yellow-600 text-white py-4 px-6 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:transform-none"
           >
@@ -126,5 +105,5 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     </div>
   );
 };
-export default FileUpload;
 
+export default FileUpload;
