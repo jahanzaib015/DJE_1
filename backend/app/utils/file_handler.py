@@ -16,6 +16,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from .trace_handler import TraceHandler
+from ..services.rag_index import index_pdf
 
 # Try to import NLTK for sentence tokenization
 try:
@@ -150,11 +151,30 @@ class FileHandler:
             # Save chunks in JSONL format for verification
             await self.save_chunks_jsonl(chunks, trace_id)
             
+            # Index chunks for RAG retrieval
+            trace_dir = self.trace_handler.get_trace_dir(trace_id)
+            clean_text_path = os.path.join(trace_dir, "20_clean_text.txt")
+            chunks_path = os.path.join(trace_dir, "30_chunks.jsonl")
+            vectordb_dir = "var/chroma"
+            
+            # Perform RAG indexing
+            rag_results = index_pdf(
+                clean_text_path=clean_text_path,
+                chunks_path=chunks_path,
+                vectordb_dir=vectordb_dir,
+                doc_id=trace_id
+            )
+            
+            # Save RAG indexing results
+            await self.trace_handler.save_rag_index(trace_id, rag_results)
+            
             # Update final metadata
             meta.update({
                 "clean_text_length": len(clean_text),
                 "chunks_count": len(chunks),
-                "extraction_time": time.time() - start_time
+                "extraction_time": time.time() - start_time,
+                "rag_indexed": rag_results.get("success", False),
+                "rag_chunks_indexed": rag_results.get("indexed", 0)
             })
             
             # Save metadata

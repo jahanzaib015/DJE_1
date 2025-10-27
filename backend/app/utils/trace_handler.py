@@ -104,6 +104,16 @@ class TraceHandler:
         
         return tables_path
     
+    async def save_rag_index(self, trace_id: str, rag_results: Dict[str, Any]) -> str:
+        """Save 35_rag_index.json with RAG indexing results"""
+        trace_dir = self.get_trace_dir(trace_id)
+        rag_path = os.path.join(trace_dir, "35_rag_index.json")
+        
+        async with aiofiles.open(rag_path, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(rag_results, indent=2, ensure_ascii=False))
+        
+        return rag_path
+    
     def get_trace_summary(self, trace_id: str) -> Dict[str, Any]:
         """Get summary of trace files"""
         trace_dir = self.get_trace_dir(trace_id)

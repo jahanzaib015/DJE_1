@@ -13,6 +13,7 @@ from datetime import datetime
 
 from .services.analysis_service import AnalysisService
 from .services.llm_service import LLMService
+from .services.rag_index import query_rag, get_collection_stats
 from .models.analysis_models import AnalysisRequest, JobStatus
 from .utils.file_handler import FileHandler
 from .utils.trace_handler import TraceHandler
@@ -389,6 +390,42 @@ async def create_test_trace():
         return {"message": f"Test trace created: {trace_id}", "trace_id": trace_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create test trace: {str(e)}")
+
+# RAG Query Endpoints
+@app.post("/api/rag/query")
+async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
+    """Query the RAG index for relevant document chunks"""
+    try:
+        vectordb_dir = "var/chroma"
+        results = query_rag(
+            vectordb_dir=vectordb_dir,
+            query=query,
+            n_results=n_results,
+            doc_id=doc_id
+        )
+        
+        if not results["success"]:
+            raise HTTPException(status_code=500, detail=results["error"])
+        
+        return results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG query failed: {str(e)}")
+
+@app.get("/api/rag/stats")
+async def get_rag_stats():
+    """Get statistics about the RAG index"""
+    try:
+        vectordb_dir = "var/chroma"
+        stats = get_collection_stats(vectordb_dir)
+        
+        if not stats["success"]:
+            raise HTTPException(status_code=500, detail=stats["error"])
+        
+        return stats
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get RAG stats: {str(e)}")
 
 # Mount static files
 import os

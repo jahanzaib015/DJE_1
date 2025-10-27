@@ -54,6 +54,16 @@ Document chunks with metadata (JSONL format):
 }
 ```
 
+### 35_rag_index.json
+RAG indexing results with vector database information:
+- `success`: Whether indexing completed successfully
+- `count`: Total number of chunks processed
+- `indexed`: Number of chunks successfully indexed
+- `collection`: ChromaDB collection name ("policy_rules")
+- `doc_id`: Document identifier (trace_id)
+- `vectordb_dir`: Path to vector database storage
+- `error`: Error message if indexing failed
+
 ### 40_llm_prompt.json
 Exact data sent to the LLM:
 - `provider`: LLM provider used

@@ -6,6 +6,7 @@ A modern, fast, and flexible document analysis system with multiple LLM provider
 
 - **Multiple LLM Providers**: OpenAI (ChatGPT), Ollama, and more
 - **Smart Analysis**: Fast keyword analysis with LLM fallback
+- **RAG Indexing**: Automatic vector indexing for semantic search and retrieval
 - **Modern UI**: Clean, responsive web interface
 - **Real-time Updates**: WebSocket-powered progress tracking
 - **Export Options**: Excel and JSON export
