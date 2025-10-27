@@ -25,22 +25,27 @@ class OpenAIProvider(LLMProviderInterface):
         if not self.api_key:
             raise Exception("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
         
-        # Use a prompt that requests specific evidence from the document
+        # Use a prompt that requires source sentence quotes for each decision
         prompt = f"""Analyze this financial document and respond with ONLY a JSON object.
 
 Document: {text[:2000]}
 
-For each investment type that is explicitly allowed, provide the specific text from the document that supports this conclusion.
+CRITICAL REQUIREMENTS:
+1. For each Allowed/Disallowed decision, you MUST quote the exact source sentence(s) from the document
+2. If no explicit sentence is present, return "Uncertain" for that investment type
+3. Only mark as "allowed": true if you can quote specific text that explicitly permits that investment type
+4. Only mark as "allowed": false if you can quote specific text that explicitly prohibits that investment type
+5. If the document is ambiguous or unclear, return "Uncertain"
 
 Respond with this exact JSON format:
 {{
-  "bonds": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
-  "stocks": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
-  "funds": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
-  "derivatives": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}}
+  "bonds": {{"allowed": true/false/Uncertain, "evidence": "exact quote from document or 'Uncertain - no explicit statement found'"}},
+  "stocks": {{"allowed": true/false/Uncertain, "evidence": "exact quote from document or 'Uncertain - no explicit statement found'"}},
+  "funds": {{"allowed": true/false/Uncertain, "evidence": "exact quote from document or 'Uncertain - no explicit statement found'"}},
+  "derivatives": {{"allowed": true/false/Uncertain, "evidence": "exact quote from document or 'Uncertain - no explicit statement found'"}}
 }}
 
-Only mark as true if the document explicitly allows that type of investment. For evidence, provide the exact text from the document that mentions this permission."""
+SELF-CHECK: Before responding, verify that each decision is backed by a specific quote from the document."""
         
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -49,15 +54,16 @@ Only mark as true if the document explicitly allows that type of investment. For
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a financial document analyst. Respond only with valid JSON."
+                            "content": "You are a financial document analyst. Respond only with valid JSON. You must quote exact source sentences for each decision."
                         },
                         {
                             "role": "user",
                             "content": prompt
                         }
                     ],
-                    "temperature": 0.1,
-                    "max_tokens": 500
+                    "temperature": 0,
+                    "top_p": 1,
+                    "max_tokens": 1000
                 }
                 
                 headers = {

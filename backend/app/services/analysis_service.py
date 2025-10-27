@@ -152,46 +152,20 @@ class AnalysisService:
             # Get LLM analysis
             analysis = await self.llm_service.analyze_document(text, llm_provider.value, model, trace_id)
             
-            # Apply LLM results to data structure
-            if analysis.get("bonds", {}).get("allowed"):
-                evidence_text = analysis.get("bonds", {}).get("evidence", "")
-                for key in data["sections"]["bond"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["bond"][key]["allowed"] = True
-                        data["sections"]["bond"][key]["note"] = f"LLM ({llm_provider.value}): Bonds allowed"
-                        data["sections"]["bond"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates bonds are permitted"
-                        }
+            # Apply LLM results to data structure using helper function
+            self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
+            self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
+            self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
             
-            if analysis.get("stocks", {}).get("allowed"):
-                evidence_text = analysis.get("stocks", {}).get("evidence", "")
-                for key in data["sections"]["stock"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["stock"][key]["allowed"] = True
-                        data["sections"]["stock"][key]["note"] = f"LLM ({llm_provider.value}): Stocks allowed"
-                        data["sections"]["stock"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates stocks are permitted"
-                        }
+            # Handle derivatives for both future and option sections
+            derivatives_decision = analysis.get("derivatives", {}).get("allowed")
+            evidence_text = analysis.get("derivatives", {}).get("evidence", "")
             
-            if analysis.get("funds", {}).get("allowed"):
-                evidence_text = analysis.get("funds", {}).get("evidence", "")
-                for key in data["sections"]["fund"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["fund"][key]["allowed"] = True
-                        data["sections"]["fund"][key]["note"] = f"LLM ({llm_provider.value}): Funds allowed"
-                        data["sections"]["fund"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates funds are permitted"
-                        }
-            
-            if analysis.get("derivatives", {}).get("allowed"):
-                evidence_text = analysis.get("derivatives", {}).get("evidence", "")
+            if derivatives_decision == True:
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = True
-                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -199,10 +173,27 @@ class AnalysisService:
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
                         data["sections"]["option"][key]["allowed"] = True
-                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
+                        }
+            elif derivatives_decision == "Uncertain":
+                for key in data["sections"]["future"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["future"][key]["allowed"] = False
+                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["future"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
+                        }
+                for key in data["sections"]["option"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["option"][key]["allowed"] = False
+                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["option"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
             
             return data
@@ -216,46 +207,20 @@ class AnalysisService:
             # Get LLM analysis with tracing
             analysis = await self.llm_service.analyze_document_with_tracing(text, llm_provider.value, model, trace_id)
             
-            # Apply LLM results to data structure
-            if analysis.get("bonds", {}).get("allowed"):
-                evidence_text = analysis.get("bonds", {}).get("evidence", "")
-                for key in data["sections"]["bond"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["bond"][key]["allowed"] = True
-                        data["sections"]["bond"][key]["note"] = f"LLM ({llm_provider.value}): Bonds allowed"
-                        data["sections"]["bond"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates bonds are permitted"
-                        }
+            # Apply LLM results to data structure using helper function
+            self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
+            self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
+            self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
             
-            if analysis.get("stocks", {}).get("allowed"):
-                evidence_text = analysis.get("stocks", {}).get("evidence", "")
-                for key in data["sections"]["stock"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["stock"][key]["allowed"] = True
-                        data["sections"]["stock"][key]["note"] = f"LLM ({llm_provider.value}): Stocks allowed"
-                        data["sections"]["stock"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates stocks are permitted"
-                        }
+            # Handle derivatives for both future and option sections
+            derivatives_decision = analysis.get("derivatives", {}).get("allowed")
+            evidence_text = analysis.get("derivatives", {}).get("evidence", "")
             
-            if analysis.get("funds", {}).get("allowed"):
-                evidence_text = analysis.get("funds", {}).get("evidence", "")
-                for key in data["sections"]["fund"]:
-                    if key != "special_other_restrictions":
-                        data["sections"]["fund"][key]["allowed"] = True
-                        data["sections"]["fund"][key]["note"] = f"LLM ({llm_provider.value}): Funds allowed"
-                        data["sections"]["fund"][key]["evidence"] = {
-                            "page": 1,
-                            "text": evidence_text if evidence_text else "LLM analysis indicates funds are permitted"
-                        }
-            
-            if analysis.get("derivatives", {}).get("allowed"):
-                evidence_text = analysis.get("derivatives", {}).get("evidence", "")
+            if derivatives_decision == True:
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = True
-                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -263,10 +228,27 @@ class AnalysisService:
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
                         data["sections"]["option"][key]["allowed"] = True
-                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
+                        }
+            elif derivatives_decision == "Uncertain":
+                for key in data["sections"]["future"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["future"][key]["allowed"] = False
+                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["future"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
+                        }
+                for key in data["sections"]["option"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["option"][key]["allowed"] = False
+                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["option"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
             
             return data
@@ -274,6 +256,32 @@ class AnalysisService:
         except Exception as e:
             raise Exception(f"LLM analysis failed: {str(e)}")
     
+    def _apply_llm_decision(self, data: Dict[str, Any], analysis: Dict, llm_provider: LLMProvider, 
+                           investment_type: str, section_keys: list) -> None:
+        """Apply LLM decision to data structure, handling Uncertain responses"""
+        decision = analysis.get(investment_type, {}).get("allowed")
+        evidence_text = analysis.get(investment_type, {}).get("evidence", "")
+        
+        if decision == True:
+            for key in section_keys:
+                if key != "special_other_restrictions":
+                    data["sections"][investment_type][key]["allowed"] = True
+                    data["sections"][investment_type][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} allowed - {evidence_text}"
+                    data["sections"][investment_type][key]["evidence"] = {
+                        "page": 1,
+                        "text": evidence_text if evidence_text else f"LLM analysis indicates {investment_type} are permitted"
+                    }
+        elif decision == "Uncertain":
+            for key in section_keys:
+                if key != "special_other_restrictions":
+                    data["sections"][investment_type][key]["allowed"] = False
+                    data["sections"][investment_type][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} uncertain - {evidence_text}"
+                    data["sections"][investment_type][key]["evidence"] = {
+                        "page": 1,
+                        "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
+                    }
+        # If decision is False or any other value, leave as default (False)
+
     def _calculate_metrics(self, data: Dict[str, Any]) -> tuple:
         """Calculate analysis metrics"""
         total_instruments = 0

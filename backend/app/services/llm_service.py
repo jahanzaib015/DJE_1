@@ -47,7 +47,8 @@ class LLMService:
             messages = await self._get_llm_messages(provider_instance, text, model)
             prompt_data = {
                 "model": model,
-                "temperature": 0.1,
+                "temperature": 0,
+                "top_p": 1,
                 "timestamp": time.time(),
                 "trace_id": trace_id,
                 "provider": provider,
