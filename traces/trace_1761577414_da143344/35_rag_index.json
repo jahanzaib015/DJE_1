@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "count": 4,
+  "indexed": 4,
+  "collection": "policy_rules",
+  "doc_id": "trace_1761577414_da143344",
+  "vectordb_dir": "var/chroma"
+}

@@ -1,0 +1,15 @@
+
+    This is a sample policy document about investment guidelines.
+    
+    Section 1: Investment Objectives
+    The fund shall invest primarily in equity securities of companies with strong fundamentals.
+    The fund may not invest in speculative instruments or high-risk derivatives.
+    
+    Section 2: Risk Management
+    All investments must comply with regulatory requirements.
+    The fund is prohibited from investing in companies with poor ESG ratings.
+    
+    Section 3: Reporting Requirements
+    Monthly reports must be submitted to the board.
+    Quarterly performance reviews are mandatory.
+    
