@@ -45,7 +45,7 @@ def embed(texts: List[str]) -> List[List[float]]:
     resp = client.embeddings.create(model="text-embedding-3-large", input=texts)
     return [d.embedding for d in resp.data]
 
-def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str, doc_id: str) -> Dict[str, Any]:
+def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/chroma", doc_id: str = None) -> Dict[str, Any]:
     """
     Index PDF chunks into ChromaDB for RAG retrieval
     
@@ -200,7 +200,7 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str, doc_id:
             "doc_id": doc_id
         }
 
-def query_rag(vectordb_dir: str, query: str, n_results: int = 5, doc_id: Optional[str] = None) -> Dict[str, Any]:
+def query_rag(vectordb_dir: str = "/tmp/chroma", query: str = "", n_results: int = 5, doc_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Query the RAG index for relevant chunks
     
@@ -325,7 +325,7 @@ def _query_rag_mock(vectordb_dir: str, query: str, n_results: int = 5, doc_id: O
             "mode": "mock"
         }
 
-def get_collection_stats(vectordb_dir: str) -> Dict[str, Any]:
+def get_collection_stats(vectordb_dir: str = "/tmp/chroma") -> Dict[str, Any]:
     """Get statistics about the indexed collection"""
     try:
         # Check if ChromaDB is available

@@ -14,6 +14,7 @@ from datetime import datetime
 from .services.analysis_service import AnalysisService
 from .services.llm_service import LLMService
 from .services.rag_index import query_rag, get_collection_stats
+from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_negation_chunks
 from .models.analysis_models import AnalysisRequest, JobStatus
 from .utils.file_handler import FileHandler
 from .utils.trace_handler import TraceHandler
@@ -396,7 +397,7 @@ async def create_test_trace():
 async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
     """Query the RAG index for relevant document chunks"""
     try:
-        vectordb_dir = "var/chroma"
+        vectordb_dir = "/tmp/chroma"
         results = query_rag(
             vectordb_dir=vectordb_dir,
             query=query,
@@ -416,7 +417,7 @@ async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
 async def get_rag_stats():
     """Get statistics about the RAG index"""
     try:
-        vectordb_dir = "var/chroma"
+        vectordb_dir = "/tmp/chroma"
         stats = get_collection_stats(vectordb_dir)
         
         if not stats["success"]:
@@ -426,6 +427,64 @@ async def get_rag_stats():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get RAG stats: {str(e)}")
+
+# RAG Retrieval Endpoints for Decision Items
+@app.post("/api/rag/retrieve")
+async def retrieve_decision_rules(query: str, doc_id: str, k: int = 5):
+    """Retrieve rules for a specific decision item (sector, country, etc.)"""
+    try:
+        vectordb_dir = "/tmp/chroma"
+        results = retrieve_rules(query, doc_id, k, vectordb_dir)
+        
+        return {
+            "success": True,
+            "query": query,
+            "doc_id": doc_id,
+            "k": k,
+            "results": results,
+            "count": len(results)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG retrieval failed: {str(e)}")
+
+@app.post("/api/rag/retrieve/batch")
+async def retrieve_decision_rules_batch(queries: list, doc_id: str, k: int = 5):
+    """Retrieve rules for multiple decision items in batch"""
+    try:
+        vectordb_dir = "/tmp/chroma"
+        results = retrieve_rules_batch(queries, doc_id, k, vectordb_dir)
+        
+        return {
+            "success": True,
+            "queries": queries,
+            "doc_id": doc_id,
+            "k": k,
+            "results": results,
+            "total_queries": len(queries)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch RAG retrieval failed: {str(e)}")
+
+@app.post("/api/rag/negations")
+async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
+    """Retrieve only negation-bearing chunks for a decision item"""
+    try:
+        vectordb_dir = "/tmp/chroma"
+        results = get_negation_chunks(query, doc_id, k, vectordb_dir)
+        
+        return {
+            "success": True,
+            "query": query,
+            "doc_id": doc_id,
+            "k": k,
+            "negation_chunks": results,
+            "count": len(results)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Negation retrieval failed: {str(e)}")
 
 # Mount static files
 import os

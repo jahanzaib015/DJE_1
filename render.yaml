@@ -24,7 +24,8 @@ services:
     plan: free
     buildCommand: |
       apt-get update && apt-get install -y tesseract-ocr poppler-utils
-      pip install -r requirements.txt
+      pip install -r requirements_render.txt
+      mkdir -p /tmp/chroma
     startCommand: |
       cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:

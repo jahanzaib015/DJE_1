@@ -13,3 +13,10 @@ python-dotenv==1.0.0
 openpyxl==3.1.2
 websockets==12.0
 gunicorn==21.2.0
+# RAG and vector database support
+chromadb==0.4.24
+# PDF processing for RAG
+PyMuPDF==1.23.8
+pypdf==6.1.1
+# Text processing
+nltk==3.8.1
