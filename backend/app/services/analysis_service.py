@@ -1,14 +1,16 @@
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 from .llm_service import LLMService
 from ..models.analysis_models import AnalysisResult, AnalysisMethod, LLMProvider
+from ..utils.trace_handler import TraceHandler
 
 class AnalysisService:
     """Core analysis service that orchestrates document analysis"""
     
     def __init__(self):
         self.llm_service = LLMService()
+        self.trace_handler = TraceHandler()
     
     async def analyze_document(
         self, 
@@ -16,7 +18,8 @@ class AnalysisService:
         analysis_method: AnalysisMethod,
         llm_provider: LLMProvider,
         model: str,
-        fund_id: str
+        fund_id: str,
+        trace_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Main analysis method that coordinates different analysis approaches"""
         
@@ -47,7 +50,10 @@ class AnalysisService:
         #         analysis_method_used = "keywords_fallback"
         
         # ONLY USING OPENAI API - All requests go through OpenAI
-        result = await self._analyze_with_llm(data, text, llm_provider, model)
+        if trace_id:
+            result = await self._analyze_with_llm_traced(data, text, llm_provider, model, trace_id)
+        else:
+            result = await self._analyze_with_llm(data, text, llm_provider, model)
         analysis_method_used = f"llm_{llm_provider.value}"
         
         processing_time = time.time() - start_time
@@ -145,6 +151,70 @@ class AnalysisService:
         try:
             # Get LLM analysis
             analysis = await self.llm_service.analyze_document(text, llm_provider.value, model)
+            
+            # Apply LLM results to data structure
+            if analysis.get("bonds", {}).get("allowed"):
+                evidence_text = analysis.get("bonds", {}).get("evidence", "")
+                for key in data["sections"]["bond"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["bond"][key]["allowed"] = True
+                        data["sections"]["bond"][key]["note"] = f"LLM ({llm_provider.value}): Bonds allowed"
+                        data["sections"]["bond"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "LLM analysis indicates bonds are permitted"
+                        }
+            
+            if analysis.get("stocks", {}).get("allowed"):
+                evidence_text = analysis.get("stocks", {}).get("evidence", "")
+                for key in data["sections"]["stock"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["stock"][key]["allowed"] = True
+                        data["sections"]["stock"][key]["note"] = f"LLM ({llm_provider.value}): Stocks allowed"
+                        data["sections"]["stock"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "LLM analysis indicates stocks are permitted"
+                        }
+            
+            if analysis.get("funds", {}).get("allowed"):
+                evidence_text = analysis.get("funds", {}).get("evidence", "")
+                for key in data["sections"]["fund"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["fund"][key]["allowed"] = True
+                        data["sections"]["fund"][key]["note"] = f"LLM ({llm_provider.value}): Funds allowed"
+                        data["sections"]["fund"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "LLM analysis indicates funds are permitted"
+                        }
+            
+            if analysis.get("derivatives", {}).get("allowed"):
+                evidence_text = analysis.get("derivatives", {}).get("evidence", "")
+                for key in data["sections"]["future"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["future"][key]["allowed"] = True
+                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["future"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
+                        }
+                for key in data["sections"]["option"]:
+                    if key != "special_other_restrictions":
+                        data["sections"]["option"][key]["allowed"] = True
+                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
+                        data["sections"]["option"][key]["evidence"] = {
+                            "page": 1,
+                            "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
+                        }
+            
+            return data
+            
+        except Exception as e:
+            raise Exception(f"LLM analysis failed: {str(e)}")
+    
+    async def _analyze_with_llm_traced(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: str) -> Dict[str, Any]:
+        """LLM-based analysis with forensic tracing"""
+        try:
+            # Get LLM analysis with tracing
+            analysis = await self.llm_service.analyze_document_with_tracing(text, llm_provider.value, model, trace_id)
             
             # Apply LLM results to data structure
             if analysis.get("bonds", {}).get("allowed"):

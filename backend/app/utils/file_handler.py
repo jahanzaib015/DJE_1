@@ -2,12 +2,13 @@ import os
 import tempfile
 import aiofiles
 import time
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import PyPDF2
 import io
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from .trace_handler import TraceHandler
 
 class FileHandler:
     """Handle file operations for the OCRD extractor"""
@@ -15,6 +16,7 @@ class FileHandler:
     def __init__(self):
         self.upload_dir = "uploads"
         self.export_dir = "exports"
+        self.trace_handler = TraceHandler()
         self._ensure_directories()
     
     def _ensure_directories(self):
@@ -49,6 +51,122 @@ class FileHandler:
                 return text.strip()
         except Exception as e:
             raise Exception(f"Failed to extract text from PDF: {str(e)}")
+    
+    async def extract_pdf_text_with_tracing(self, file_path: str, trace_id: str) -> Dict[str, Any]:
+        """Extract text from PDF with forensic tracing"""
+        try:
+            start_time = time.time()
+            
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                total_pages = len(pdf_reader.pages)
+                
+                # Extract text page by page
+                page_texts = []
+                raw_text = ""
+                
+                for page_num in range(total_pages):
+                    page = pdf_reader.pages[page_num]
+                    page_text = page.extract_text()
+                    page_texts.append(page_text)
+                    raw_text += page_text + "\n"
+                    
+                    # Save raw text for each page
+                    await self.trace_handler.save_raw_text_page(
+                        trace_id, page_num + 1, page_text
+                    )
+                
+                # Clean and normalize text
+                clean_text = self._clean_text(raw_text.strip())
+                
+                # Save clean text
+                await self.trace_handler.save_clean_text(trace_id, clean_text)
+                
+                # Create chunks
+                chunks = self._create_chunks(clean_text)
+                await self.trace_handler.save_chunks(trace_id, chunks)
+                
+                extraction_time = time.time() - start_time
+                
+                return {
+                    "raw_text": raw_text.strip(),
+                    "clean_text": clean_text,
+                    "page_texts": page_texts,
+                    "chunks": chunks,
+                    "total_pages": total_pages,
+                    "extraction_time": extraction_time
+                }
+                
+        except Exception as e:
+            raise Exception(f"Failed to extract text from PDF: {str(e)}")
+    
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize text"""
+        import re
+        
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove page numbers and headers/footers (basic patterns)
+        text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'Page \d+ of \d+', '', text, flags=re.IGNORECASE)
+        
+        # Normalize line breaks
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        
+        return text.strip()
+    
+    def _create_chunks(self, text: str, chunk_size: int = 2000, overlap: int = 200) -> List[Dict[str, Any]]:
+        """Create text chunks with metadata"""
+        import re
+        
+        # Split by paragraphs first
+        paragraphs = re.split(r'\n\s*\n', text)
+        
+        chunks = []
+        current_chunk = ""
+        current_start = 0
+        chunk_id = 0
+        
+        for para in paragraphs:
+            if len(current_chunk) + len(para) > chunk_size and current_chunk:
+                # Save current chunk
+                chunk_id += 1
+                chunks.append({
+                    "chunk_id": chunk_id,
+                    "start_char": current_start,
+                    "end_char": current_start + len(current_chunk),
+                    "text": current_chunk.strip(),
+                    "length": len(current_chunk),
+                    "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
+                    "next_chunk": None  # Will be updated
+                })
+                
+                # Start new chunk with overlap
+                overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+                current_chunk = overlap_text + " " + para
+                current_start = current_start + len(current_chunk) - len(overlap_text) - len(para) - 1
+            else:
+                current_chunk += "\n\n" + para if current_chunk else para
+        
+        # Add final chunk
+        if current_chunk.strip():
+            chunk_id += 1
+            chunks.append({
+                "chunk_id": chunk_id,
+                "start_char": current_start,
+                "end_char": current_start + len(current_chunk),
+                "text": current_chunk.strip(),
+                "length": len(current_chunk),
+                "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
+                "next_chunk": None
+            })
+        
+        # Update next_chunk references
+        for i in range(len(chunks) - 1):
+            chunks[i]["next_chunk"] = chunks[i + 1]["chunk_id"]
+        
+        return chunks
     
     async def create_excel_export(self, data: dict) -> str:
         """Create Excel export from analysis results"""

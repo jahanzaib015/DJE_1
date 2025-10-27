@@ -20,6 +20,7 @@ export interface AnalysisResult {
   allowed_instruments: number;
   evidence_coverage: number;
   processing_time: number;
+  trace_id?: string;
 }
 
 export interface Settings {

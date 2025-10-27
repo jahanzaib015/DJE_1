@@ -4,6 +4,7 @@ import Settings from './components/Settings';
 import Progress from './components/Progress';
 import Results from './components/Results';
 import Header from './components/Header';
+import TraceViewer from './components/TraceViewer';
 import { usePolling } from './hooks/usePolling';
 import { AnalysisService } from './services/AnalysisService';
 import { JobStatus, AnalysisResult, Settings as SettingsType } from './types';
@@ -14,6 +15,8 @@ function App() {
   const [currentJob, setCurrentJob] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [results, setResults] = useState<AnalysisResult | null>(null);
+  const [showTraceViewer, setShowTraceViewer] = useState(false);
+  const [currentTraceId, setCurrentTraceId] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsType>({
     analysisMethod: 'llm_with_fallback',
     llmProvider: 'openai',
@@ -143,10 +146,38 @@ function App() {
                   onExportExcel={handleExportExcel}
                   onExportJson={handleExportJson}
                 />
+                {/* Trace Viewer Button */}
+                {results.trace_id && (
+                  <div className="p-4 border-t">
+                    <button
+                      onClick={() => {
+                        setCurrentTraceId(results.trace_id!);
+                        setShowTraceViewer(true);
+                      }}
+                      className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                    >
+                      🔍 View Trace Details
+                    </button>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Trace ID: {results.trace_id}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
         </div>
       </div>
+
+      {/* Trace Viewer Modal */}
+      {showTraceViewer && (
+        <TraceViewer
+          traceId={currentTraceId || undefined}
+          onClose={() => {
+            setShowTraceViewer(false);
+            setCurrentTraceId(null);
+          }}
+        />
+      )}
     </div>
   );
 }

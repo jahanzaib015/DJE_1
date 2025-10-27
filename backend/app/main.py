@@ -6,6 +6,7 @@ import uvicorn
 import os
 import json
 import asyncio
+import time
 from typing import Dict, Any
 import uuid
 from datetime import datetime
@@ -14,6 +15,7 @@ from .services.analysis_service import AnalysisService
 from .services.llm_service import LLMService
 from .models.analysis_models import AnalysisRequest, JobStatus
 from .utils.file_handler import FileHandler
+from .utils.trace_handler import TraceHandler
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -35,6 +37,7 @@ app.add_middleware(
 analysis_service = AnalysisService()
 llm_service = LLMService()
 file_handler = FileHandler()
+trace_handler = TraceHandler()
 
 # In-memory job storage (in production, use Redis or database)
 jobs: Dict[str, JobStatus] = {}
@@ -108,11 +111,14 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.post("/api/analyze")
-async def analyze_document(request: AnalysisRequest):
+async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True):
     """Start document analysis"""
     try:
         # Generate job ID
         job_id = str(uuid.uuid4())
+        
+        # Generate trace ID if tracing is enabled
+        trace_id = trace_handler.generate_trace_id() if enable_tracing else None
         
         # Initialize job status
         jobs[job_id] = JobStatus(
@@ -125,14 +131,18 @@ async def analyze_document(request: AnalysisRequest):
         )
         
         # Start analysis in background
-        asyncio.create_task(run_analysis(job_id, request))
+        asyncio.create_task(run_analysis(job_id, request, trace_id))
         
-        return {"job_id": job_id, "status": "queued"}
+        response = {"job_id": job_id, "status": "queued"}
+        if trace_id:
+            response["trace_id"] = trace_id
+        
+        return response
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed to start: {str(e)}")
 
-async def run_analysis(job_id: str, request: AnalysisRequest):
+async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Run analysis in background with progress updates"""
     try:
         # Update status
@@ -141,8 +151,45 @@ async def run_analysis(job_id: str, request: AnalysisRequest):
         jobs[job_id].message = "Extracting text from PDF"
         await manager.send_message(job_id, jobs[job_id].dict())
         
-        # Extract text
-        text = await file_handler.extract_pdf_text(request.file_path)
+        # Extract text with or without tracing
+        if trace_id:
+            # Create trace directory
+            await trace_handler.create_trace_directory(trace_id)
+            
+            # Save metadata
+            meta_data = {
+                "trace_id": trace_id,
+                "job_id": job_id,
+                "filename": os.path.basename(request.file_path),
+                "file_path": request.file_path,
+                "analysis_method": request.analysis_method.value,
+                "llm_provider": request.llm_provider.value,
+                "model": request.model,
+                "fund_id": request.fund_id,
+                "ocr_enabled": False,  # Currently not using OCR
+                "extractor": "PyPDF2",
+                "start_time": time.time(),
+                "created_at": datetime.now().isoformat()
+            }
+            await trace_handler.save_meta(trace_id, meta_data)
+            
+            # Extract text with tracing
+            extraction_result = await file_handler.extract_pdf_text_with_tracing(request.file_path, trace_id)
+            text = extraction_result["clean_text"]
+            
+            # Update metadata with extraction info
+            meta_data.update({
+                "total_pages": extraction_result["total_pages"],
+                "extraction_time": extraction_result["extraction_time"],
+                "text_length": len(text),
+                "chunks_count": len(extraction_result["chunks"])
+            })
+            await trace_handler.save_meta(trace_id, meta_data)
+            
+        else:
+            # Regular text extraction
+            text = await file_handler.extract_pdf_text(request.file_path)
+        
         jobs[job_id].progress = 30
         jobs[job_id].message = "Text extracted, starting analysis"
         await manager.send_message(job_id, jobs[job_id].dict())
@@ -153,7 +200,8 @@ async def run_analysis(job_id: str, request: AnalysisRequest):
             analysis_method=request.analysis_method,
             llm_provider=request.llm_provider,
             model=request.model,
-            fund_id=request.fund_id
+            fund_id=request.fund_id,
+            trace_id=trace_id
         )
         
         jobs[job_id].progress = 90
@@ -165,6 +213,11 @@ async def run_analysis(job_id: str, request: AnalysisRequest):
         jobs[job_id].progress = 100
         jobs[job_id].message = "Analysis completed successfully"
         jobs[job_id].result = result
+        
+        # Add trace_id to result if available
+        if trace_id:
+            jobs[job_id].result["trace_id"] = trace_id
+        
         await manager.send_message(job_id, jobs[job_id].dict())
         
     except Exception as e:
@@ -232,6 +285,85 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(job_id)
+
+# Trace management endpoints
+@app.get("/api/traces")
+async def list_traces():
+    """List all available traces"""
+    try:
+        traces = trace_handler.list_traces()
+        return {"traces": traces, "count": len(traces)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list traces: {str(e)}")
+
+@app.get("/api/traces/{trace_id}")
+async def get_trace(trace_id: str):
+    """Get trace details"""
+    try:
+        summary = trace_handler.get_trace_summary(trace_id)
+        if "error" in summary:
+            raise HTTPException(status_code=404, detail=summary["error"])
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get trace: {str(e)}")
+
+@app.get("/api/traces/{trace_id}/files/{filename}")
+async def get_trace_file(trace_id: str, filename: str):
+    """Get specific trace file content"""
+    try:
+        trace_dir = trace_handler.get_trace_dir(trace_id)
+        file_path = os.path.join(trace_dir, filename)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Return appropriate content type based on file extension
+        if filename.endswith('.json'):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = json.load(f)
+            return content
+        elif filename.endswith('.txt'):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return {"content": content}
+        elif filename.endswith('.jsonl'):
+            lines = []
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    lines.append(json.loads(line.strip()))
+            return {"lines": lines}
+        else:
+            # Return as text file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return {"content": content}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get trace file: {str(e)}")
+
+@app.delete("/api/traces/{trace_id}")
+async def delete_trace(trace_id: str):
+    """Delete a trace"""
+    try:
+        trace_dir = trace_handler.get_trace_dir(trace_id)
+        if not os.path.exists(trace_dir):
+            raise HTTPException(status_code=404, detail="Trace not found")
+        
+        import shutil
+        shutil.rmtree(trace_dir)
+        return {"message": f"Trace {trace_id} deleted successfully"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete trace: {str(e)}")
+
+@app.post("/api/traces/cleanup")
+async def cleanup_traces(max_age_hours: int = 24):
+    """Clean up old traces"""
+    try:
+        trace_handler.cleanup_old_traces(max_age_hours)
+        return {"message": f"Cleaned up traces older than {max_age_hours} hours"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup traces: {str(e)}")
 
 # Mount static files
 import os
