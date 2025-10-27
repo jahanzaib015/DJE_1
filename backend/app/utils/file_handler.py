@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 import PyPDF2
 import io
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -290,30 +291,94 @@ class FileHandler:
         return text.strip()
     
     async def _extract_tables(self, file_path: str, trace_dir: Path) -> List[Dict]:
-        """Extract tables from PDF using Camelot"""
+        """Extract tables from PDF using Camelot with both lattice and stream flavors"""
         if not CAMELOT_AVAILABLE:
             return []
         
+        table_data = []
+        table_id = 1
+        
+        # Method 1: Try lattice first (line-drawn tables)
         try:
-            tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
-            table_data = []
+            print("Attempting table extraction with lattice flavor...")
+            lattice_tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
             
-            for i, table in enumerate(tables):
-                # Convert to dictionary format
+            for table in lattice_tables:
+                # Convert to markdown-like format for better LLM processing
+                markdown_text = self._convert_table_to_markdown(table.df, table_id, table.page, "lattice")
+                
                 table_dict = {
-                    "table_id": i + 1,
+                    "table_id": table_id,
                     "page": table.page,
                     "accuracy": table.accuracy,
+                    "method": "lattice",
                     "data": table.df.to_dict('records'),
-                    "text": table.df.to_string(index=False)
+                    "text": table.df.to_string(index=False),
+                    "markdown": markdown_text
                 }
                 table_data.append(table_dict)
-            
-            return table_data
+                table_id += 1
+                
+            print(f"Lattice extraction found {len(lattice_tables)} tables")
             
         except Exception as e:
-            print(f"Table extraction failed: {e}")
-            return []
+            print(f"Lattice table extraction failed: {e}")
+        
+        # Method 2: Try stream (whitespace-separated tables)
+        try:
+            print("Attempting table extraction with stream flavor...")
+            stream_tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
+            
+            for table in stream_tables:
+                # Convert to markdown-like format for better LLM processing
+                markdown_text = self._convert_table_to_markdown(table.df, table_id, table.page, "stream")
+                
+                table_dict = {
+                    "table_id": table_id,
+                    "page": table.page,
+                    "accuracy": table.accuracy,
+                    "method": "stream",
+                    "data": table.df.to_dict('records'),
+                    "text": table.df.to_string(index=False),
+                    "markdown": markdown_text
+                }
+                table_data.append(table_dict)
+                table_id += 1
+                
+            print(f"Stream extraction found {len(stream_tables)} tables")
+            
+        except Exception as e:
+            print(f"Stream table extraction failed: {e}")
+        
+        print(f"Total tables extracted: {len(table_data)}")
+        return table_data
+    
+    def _convert_table_to_markdown(self, df, table_id: int, page: int, method: str) -> str:
+        """Convert table DataFrame to markdown-like format for better LLM processing"""
+        try:
+            # Create markdown table with proper formatting
+            markdown_lines = []
+            markdown_lines.append(f"=== TABLE {table_id} (page {page}) - {method.upper()} ===")
+            
+            # Convert DataFrame to markdown format
+            if not df.empty:
+                # Get column headers
+                headers = df.columns.tolist()
+                markdown_lines.append(" | ".join(str(col) for col in headers))
+                markdown_lines.append(" | ".join("---" for _ in headers))
+                
+                # Add data rows
+                for _, row in df.iterrows():
+                    row_data = [str(cell) if pd.notna(cell) else "" for cell in row]
+                    markdown_lines.append(" | ".join(row_data))
+            
+            markdown_lines.append(f"=== END TABLE {table_id} ===")
+            return "\n".join(markdown_lines)
+            
+        except Exception as e:
+            print(f"Error converting table {table_id} to markdown: {e}")
+            # Fallback to simple text format
+            return f"=== TABLE {table_id} (page {page}) - {method.upper()} ===\n{df.to_string(index=False)}\n=== END TABLE {table_id} ==="
     
     def _stitch_tables_into_text(self, text: str, tables: List[Dict]) -> str:
         """Stitch extracted tables back into text with clear markers"""
@@ -322,11 +387,16 @@ class FileHandler:
         
         table_texts = []
         for table in tables:
-            table_marker = f"\n\n[TABLE {table['table_id']} - Page {table['page']}]\n"
-            table_content = table['text']
-            table_marker += table_content
-            table_marker += f"\n[END TABLE {table['table_id']}]\n\n"
-            table_texts.append(table_marker)
+            # Use the markdown format if available, otherwise fall back to text
+            if 'markdown' in table:
+                table_texts.append(f"\n\n{table['markdown']}\n")
+            else:
+                # Fallback to old format
+                table_marker = f"\n\n[TABLE {table['table_id']} - Page {table['page']}]\n"
+                table_content = table['text']
+                table_marker += table_content
+                table_marker += f"\n[END TABLE {table['table_id']}]\n\n"
+                table_texts.append(table_marker)
         
         # Insert tables at the end of the document
         return text + "\n\n" + "\n".join(table_texts)
