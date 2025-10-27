@@ -6,9 +6,17 @@ passlib[bcrypt]==1.7.4
 aiofiles==23.2.1
 httpx==0.25.2
 openai==1.3.7
-pydantic==2.5.0
+pydantic==2.8.2
 pydantic-settings==2.1.0
 jinja2==3.1.2
 python-dotenv==1.0.0
 openpyxl==3.1.2
 websockets==12.0
+# Robust PDF processing
+PyMuPDF==1.26.5
+pdfminer.six==20221105
+# OCR support (optional)
+pytesseract==0.3.10
+# Table extraction (optional)
+camelot-py==0.10.1
+opencv-python==4.12.0.88

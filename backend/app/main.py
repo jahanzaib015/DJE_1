@@ -291,8 +291,13 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 async def list_traces():
     """List all available traces"""
     try:
+        # Debug: Check if traces directory exists
+        traces_dir = trace_handler.base_traces_dir
+        if not os.path.exists(traces_dir):
+            return {"traces": [], "count": 0, "debug": f"Traces directory does not exist: {traces_dir}"}
+        
         traces = trace_handler.list_traces()
-        return {"traces": traces, "count": len(traces)}
+        return {"traces": traces, "count": len(traces), "debug": f"Traces directory: {traces_dir}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list traces: {str(e)}")
 
@@ -364,6 +369,26 @@ async def cleanup_traces(max_age_hours: int = 24):
         return {"message": f"Cleaned up traces older than {max_age_hours} hours"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup traces: {str(e)}")
+
+@app.post("/api/traces/test")
+async def create_test_trace():
+    """Create a test trace for debugging"""
+    try:
+        trace_id = trace_handler.generate_trace_id()
+        await trace_handler.create_trace_directory(trace_id)
+        
+        # Create test metadata
+        test_meta = {
+            "trace_id": trace_id,
+            "test": True,
+            "created_at": datetime.now().isoformat(),
+            "message": "This is a test trace"
+        }
+        await trace_handler.save_meta(trace_id, test_meta)
+        
+        return {"message": f"Test trace created: {trace_id}", "trace_id": trace_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create test trace: {str(e)}")
 
 # Mount static files
 import os

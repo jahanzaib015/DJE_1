@@ -17,3 +17,21 @@ services:
         value: https://dje-1-3.onrender.com
       - key: NODE_ENV
         value: production
+
+  - type: web
+    name: ocrd-extractor-python-backend
+    env: python
+    plan: free
+    buildCommand: |
+      apt-get update && apt-get install -y tesseract-ocr poppler-utils
+      pip install -r requirements.txt
+    startCommand: |
+      cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: PORT
+        value: 8000
+      - key: OPENAI_API_KEY
+        fromService: ocrd-extractor-python-backend
+        type: secret

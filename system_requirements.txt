@@ -1,0 +1,21 @@
+# System requirements for OCR functionality
+# Install these on your system (not via pip)
+
+# For Ubuntu/Debian:
+# sudo apt-get update
+# sudo apt-get install tesseract-ocr
+# sudo apt-get install poppler-utils
+
+# For macOS:
+# brew install tesseract
+# brew install poppler
+
+# For Windows:
+# Download and install:
+# - Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
+# - Poppler: https://blog.alivate.com.au/poppler-windows/
+
+# For Render.com deployment, add to render.yaml:
+# buildCommand: |
+#   apt-get update && apt-get install -y tesseract-ocr poppler-utils
+#   pip install -r requirements.txt

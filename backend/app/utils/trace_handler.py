@@ -94,6 +94,16 @@ class TraceHandler:
         
         return response_path
     
+    async def save_tables(self, trace_id: str, tables: List[Dict[str, Any]]) -> str:
+        """Save 25_tables.json with extracted table data"""
+        trace_dir = self.get_trace_dir(trace_id)
+        tables_path = os.path.join(trace_dir, "25_tables.json")
+        
+        async with aiofiles.open(tables_path, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(tables, indent=2, ensure_ascii=False))
+        
+        return tables_path
+    
     def get_trace_summary(self, trace_id: str) -> Dict[str, Any]:
         """Get summary of trace files"""
         trace_dir = self.get_trace_dir(trace_id)
