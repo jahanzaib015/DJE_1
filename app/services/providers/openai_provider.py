@@ -25,15 +25,22 @@ class OpenAIProvider(LLMProviderInterface):
         if not self.api_key:
             raise Exception("OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.")
         
-        # Use a simplified prompt for faster processing
+        # Use a prompt that requests specific evidence from the document
         prompt = f"""Analyze this financial document and respond with ONLY a JSON object.
 
 Document: {text[:2000]}
 
-Respond with this exact JSON format:
-{{"bonds": true/false, "stocks": true/false, "funds": true/false, "derivatives": true/false}}
+For each investment type that is explicitly allowed, provide the specific text from the document that supports this conclusion.
 
-Only mark as true if the document explicitly allows that type of investment."""
+Respond with this exact JSON format:
+{{
+  "bonds": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
+  "stocks": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
+  "funds": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}},
+  "derivatives": {{"allowed": true/false, "evidence": "specific quote from document or empty string"}}
+}}
+
+Only mark as true if the document explicitly allows that type of investment. For evidence, provide the exact text from the document that mentions this permission."""
         
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:

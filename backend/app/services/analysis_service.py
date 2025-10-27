@@ -147,44 +147,48 @@ class AnalysisService:
             analysis = await self.llm_service.analyze_document(text, llm_provider.value, model)
             
             # Apply LLM results to data structure
-            if analysis.get("bonds"):
+            if analysis.get("bonds", {}).get("allowed"):
+                evidence_text = analysis.get("bonds", {}).get("evidence", "")
                 for key in data["sections"]["bond"]:
                     if key != "special_other_restrictions":
                         data["sections"]["bond"][key]["allowed"] = True
                         data["sections"]["bond"][key]["note"] = f"LLM ({llm_provider.value}): Bonds allowed"
                         data["sections"]["bond"][key]["evidence"] = {
                             "page": 1,
-                            "text": f"LLM analysis indicates bonds are permitted"
+                            "text": evidence_text if evidence_text else "LLM analysis indicates bonds are permitted"
                         }
             
-            if analysis.get("stocks"):
+            if analysis.get("stocks", {}).get("allowed"):
+                evidence_text = analysis.get("stocks", {}).get("evidence", "")
                 for key in data["sections"]["stock"]:
                     if key != "special_other_restrictions":
                         data["sections"]["stock"][key]["allowed"] = True
                         data["sections"]["stock"][key]["note"] = f"LLM ({llm_provider.value}): Stocks allowed"
                         data["sections"]["stock"][key]["evidence"] = {
                             "page": 1,
-                            "text": f"LLM analysis indicates stocks are permitted"
+                            "text": evidence_text if evidence_text else "LLM analysis indicates stocks are permitted"
                         }
             
-            if analysis.get("funds"):
+            if analysis.get("funds", {}).get("allowed"):
+                evidence_text = analysis.get("funds", {}).get("evidence", "")
                 for key in data["sections"]["fund"]:
                     if key != "special_other_restrictions":
                         data["sections"]["fund"][key]["allowed"] = True
                         data["sections"]["fund"][key]["note"] = f"LLM ({llm_provider.value}): Funds allowed"
                         data["sections"]["fund"][key]["evidence"] = {
                             "page": 1,
-                            "text": f"LLM analysis indicates funds are permitted"
+                            "text": evidence_text if evidence_text else "LLM analysis indicates funds are permitted"
                         }
             
-            if analysis.get("derivatives"):
+            if analysis.get("derivatives", {}).get("allowed"):
+                evidence_text = analysis.get("derivatives", {}).get("evidence", "")
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = True
                         data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
-                            "text": f"LLM analysis indicates derivatives are permitted"
+                            "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
                         }
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
@@ -192,7 +196,7 @@ class AnalysisService:
                         data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
-                            "text": f"LLM analysis indicates derivatives are permitted"
+                            "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
                         }
             
             return data

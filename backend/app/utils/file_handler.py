@@ -86,7 +86,11 @@ class FileHandler:
                         ws.cell(row=row, column=2, value=key)
                         ws.cell(row=row, column=3, value="✓" if value.get("allowed") else "")
                         ws.cell(row=row, column=4, value=value.get("note", ""))
-                        ws.cell(row=row, column=5, value=value.get("evidence", {}).get("text", ""))
+                        # Only show evidence for allowed items
+                        evidence_text = ""
+                        if value.get("allowed"):
+                            evidence_text = value.get("evidence", {}).get("text", "")
+                        ws.cell(row=row, column=5, value=evidence_text)
                         
                         # Add borders
                         for col in range(1, 6):
