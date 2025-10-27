@@ -53,7 +53,7 @@ class AnalysisService:
         if trace_id:
             result = await self._analyze_with_llm_traced(data, text, llm_provider, model, trace_id)
         else:
-            result = await self._analyze_with_llm(data, text, llm_provider, model)
+            result = await self._analyze_with_llm(data, text, llm_provider, model, trace_id)
         analysis_method_used = f"llm_{llm_provider.value}"
         
         processing_time = time.time() - start_time
@@ -146,11 +146,11 @@ class AnalysisService:
         
         return data
     
-    async def _analyze_with_llm(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str) -> Dict[str, Any]:
+    async def _analyze_with_llm(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
         """LLM-based analysis"""
         try:
             # Get LLM analysis
-            analysis = await self.llm_service.analyze_document(text, llm_provider.value, model)
+            analysis = await self.llm_service.analyze_document(text, llm_provider.value, model, trace_id)
             
             # Apply LLM results to data structure
             if analysis.get("bonds", {}).get("allowed"):
