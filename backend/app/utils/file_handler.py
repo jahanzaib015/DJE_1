@@ -17,6 +17,19 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from .trace_handler import TraceHandler
 
+# Try to import NLTK for sentence tokenization
+try:
+    import nltk
+    from nltk.tokenize import sent_tokenize
+    NLTK_AVAILABLE = True
+    # Download required NLTK data
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+except ImportError:
+    NLTK_AVAILABLE = False
+
 # Try to import optional dependencies
 try:
     import fitz  # PyMuPDF
@@ -38,6 +51,9 @@ except ImportError:
 
 class FileHandler:
     """Handle file operations for the OCRD extractor"""
+    
+    # Negation cues pattern for preserving exceptions and negations
+    NEG_CUES = re.compile(r"\b(not|no|except|unless|excluded|exclusion|prohibit|forbidden|restricted|ban(ned)?|provided\s+that|excluding|not\s+permitted|not\s+allowed)\b", re.IGNORECASE)
     
     def __init__(self):
         self.upload_dir = "uploads"
@@ -127,9 +143,12 @@ class FileHandler:
                 # Save tables separately
                 await self.trace_handler.save_tables(trace_id, tables)
             
-            # Create chunks
+            # Create chunks with improved negation-aware chunking
             chunks = self._create_chunks(clean_text)
             await self.trace_handler.save_chunks(trace_id, chunks)
+            
+            # Save chunks in JSONL format for verification
+            await self.save_chunks_jsonl(chunks, trace_id)
             
             # Update final metadata
             meta.update({
@@ -417,10 +436,115 @@ class FileHandler:
         
         return text.strip()
     
-    def _create_chunks(self, text: str, chunk_size: int = 2000, overlap: int = 200) -> List[Dict[str, Any]]:
-        """Create text chunks with metadata"""
-        import re
+    def _create_chunks(self, text: str, max_tokens: int = 1200, overlap_tokens: int = 150) -> List[Dict[str, Any]]:
+        """Create text chunks with negation-aware chunking that preserves exceptions and legal constructs"""
         
+        # Fallback to simple chunking if NLTK is not available
+        if not NLTK_AVAILABLE:
+            return self._create_chunks_fallback(text, max_tokens * 4, overlap_tokens * 4)
+        
+        # Convert token estimates to character estimates (rough approximation: 1 token ≈ 4 characters)
+        max_chars = max_tokens * 4
+        overlap_chars = overlap_tokens * 4
+        
+        # Split text into sentences
+        sentences = sent_tokenize(text)
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        chunk_id = 0
+        char_position = 0
+        
+        i = 0
+        while i < len(sentences):
+            sentence = sentences[i].strip()
+            if not sentence:
+                i += 1
+                continue
+                
+            # Check if sentence contains negation cues
+            has_negation = bool(self.NEG_CUES.search(sentence))
+            
+            # Calculate length of current sentence plus potential neighbors
+            sentence_length = len(sentence)
+            extended_length = sentence_length
+            
+            # If sentence has negation cues, try to include neighbors
+            if has_negation:
+                # Add previous sentence if available
+                if i > 0 and sentences[i-1].strip():
+                    prev_sentence = sentences[i-1].strip()
+                    extended_length += len(prev_sentence) + 1  # +1 for space
+                
+                # Add next sentence if available
+                if i + 1 < len(sentences) and sentences[i+1].strip():
+                    next_sentence = sentences[i+1].strip()
+                    extended_length += len(next_sentence) + 1  # +1 for space
+            
+            # Check if adding this sentence (with potential neighbors) would exceed limit
+            if current_length + extended_length > max_chars and current_chunk:
+                # Save current chunk
+                chunk_id += 1
+                chunk_text = " ".join(current_chunk).strip()
+                chunks.append({
+                    "chunk_id": chunk_id,
+                    "start_char": char_position - current_length,
+                    "end_char": char_position,
+                    "text": chunk_text,
+                    "length": current_length,
+                    "token_estimate": current_length // 4,
+                    "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
+                    "next_chunk": None,  # Will be updated
+                    "has_negations": any(self.NEG_CUES.search(s) for s in current_chunk)
+                })
+                
+                # Create overlap for next chunk
+                overlap_text = chunk_text[-overlap_chars:] if len(chunk_text) > overlap_chars else chunk_text
+                current_chunk = [overlap_text] if overlap_text else []
+                current_length = len(overlap_text)
+            else:
+                # Add sentence to current chunk
+                if has_negation and i > 0 and sentences[i-1].strip() and not current_chunk:
+                    # Include previous sentence for context
+                    current_chunk.append(sentences[i-1].strip())
+                    current_length += len(sentences[i-1].strip()) + 1
+                
+                current_chunk.append(sentence)
+                current_length += sentence_length + (1 if current_chunk else 0)
+                
+                # If we included next sentence for negation context, skip it in next iteration
+                if has_negation and i + 1 < len(sentences) and sentences[i+1].strip():
+                    current_chunk.append(sentences[i+1].strip())
+                    current_length += len(sentences[i+1].strip()) + 1
+                    i += 1  # Skip next sentence as we already included it
+            
+            char_position += sentence_length + 1  # +1 for space
+            i += 1
+        
+        # Add final chunk
+        if current_chunk:
+            chunk_id += 1
+            chunk_text = " ".join(current_chunk).strip()
+            chunks.append({
+                "chunk_id": chunk_id,
+                "start_char": char_position - current_length,
+                "end_char": char_position,
+                "text": chunk_text,
+                "length": current_length,
+                "token_estimate": current_length // 4,
+                "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
+                "next_chunk": None,
+                "has_negations": any(self.NEG_CUES.search(s) for s in current_chunk)
+            })
+        
+        # Update next_chunk references
+        for i in range(len(chunks) - 1):
+            chunks[i]["next_chunk"] = chunks[i + 1]["chunk_id"]
+        
+        return chunks
+    
+    def _create_chunks_fallback(self, text: str, chunk_size: int = 2000, overlap: int = 200) -> List[Dict[str, Any]]:
+        """Fallback chunking method when NLTK is not available"""
         # Split by paragraphs first
         paragraphs = re.split(r'\n\s*\n', text)
         
@@ -439,8 +563,10 @@ class FileHandler:
                     "end_char": current_start + len(current_chunk),
                     "text": current_chunk.strip(),
                     "length": len(current_chunk),
+                    "token_estimate": len(current_chunk) // 4,
                     "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
-                    "next_chunk": None  # Will be updated
+                    "next_chunk": None,  # Will be updated
+                    "has_negations": bool(self.NEG_CUES.search(current_chunk))
                 })
                 
                 # Start new chunk with overlap
@@ -459,8 +585,10 @@ class FileHandler:
                 "end_char": current_start + len(current_chunk),
                 "text": current_chunk.strip(),
                 "length": len(current_chunk),
+                "token_estimate": len(current_chunk) // 4,
                 "prev_chunk": chunk_id - 1 if chunk_id > 1 else None,
-                "next_chunk": None
+                "next_chunk": None,
+                "has_negations": bool(self.NEG_CUES.search(current_chunk))
             })
         
         # Update next_chunk references
@@ -468,6 +596,33 @@ class FileHandler:
             chunks[i]["next_chunk"] = chunks[i + 1]["chunk_id"]
         
         return chunks
+    
+    async def save_chunks_jsonl(self, chunks: List[Dict[str, Any]], trace_id: str) -> str:
+        """Save chunks to JSONL format for verification and analysis"""
+        try:
+            jsonl_path = os.path.join(self.trace_handler.get_trace_dir(trace_id), "chunks.jsonl")
+            
+            with open(jsonl_path, 'w', encoding='utf-8') as f:
+                for chunk in chunks:
+                    # Create a clean JSONL entry
+                    jsonl_entry = {
+                        "chunk_id": chunk["chunk_id"],
+                        "start_char": chunk["start_char"],
+                        "end_char": chunk["end_char"],
+                        "length": chunk["length"],
+                        "token_estimate": chunk.get("token_estimate", chunk["length"] // 4),
+                        "has_negations": chunk.get("has_negations", False),
+                        "prev_chunk": chunk.get("prev_chunk"),
+                        "next_chunk": chunk.get("next_chunk"),
+                        "text": chunk["text"]
+                    }
+                    f.write(json.dumps(jsonl_entry, ensure_ascii=False) + '\n')
+            
+            return jsonl_path
+            
+        except Exception as e:
+            print(f"Failed to save chunks JSONL: {e}")
+            return None
     
     async def create_excel_export(self, data: dict) -> str:
         """Create Excel export from analysis results"""
