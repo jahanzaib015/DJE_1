@@ -97,10 +97,16 @@ If unsure, still return valid JSON — never output plain text.
                 llm_response = data["choices"][0]["message"]["content"].strip()
                 print(f"🔍 Raw LLM response: {llm_response}")
 
-                # Ensure it looks like JSON
+                # --- 🧠 FIX START: Handle non-JSON garbage like 'bonds' ---
                 if not llm_response.startswith("{") or not llm_response.endswith("}"):
-                    print("⚠️ LLM response not valid JSON, retrying with stricter instruction...")
-                    return await self._retry_with_json_prompt(text, model, client, headers)
+                    print("⚠️ LLM returned plain text — auto-wrapping into JSON fallback.")
+                    return {
+                        "bonds": {"allowed": "Uncertain", "evidence": llm_response},
+                        "stocks": {"allowed": "Uncertain", "evidence": llm_response},
+                        "funds": {"allowed": "Uncertain", "evidence": llm_response},
+                        "derivatives": {"allowed": "Uncertain", "evidence": llm_response},
+                    }
+                # --- 🧠 FIX END ---
 
                 try:
                     parsed_json = json.loads(llm_response)
