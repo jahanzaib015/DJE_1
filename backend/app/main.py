@@ -44,6 +44,63 @@ trace_handler = TraceHandler()
 # In-memory job storage (in production, use Redis or database)
 jobs: Dict[str, JobStatus] = {}
 
+# Job persistence file
+JOBS_FILE = "jobs_persistence.json"
+
+def load_jobs():
+    """Load jobs from persistence file"""
+    global jobs
+    try:
+        if os.path.exists(JOBS_FILE):
+            with open(JOBS_FILE, 'r') as f:
+                jobs_data = json.load(f)
+                for job_id, job_data in jobs_data.items():
+                    jobs[job_id] = JobStatus(**job_data)
+            print(f"Loaded {len(jobs)} jobs from persistence file")
+    except Exception as e:
+        print(f"Error loading jobs from persistence: {e}")
+
+def save_jobs():
+    """Save jobs to persistence file"""
+    try:
+        jobs_data = {job_id: job.dict() for job_id, job in jobs.items()}
+        with open(JOBS_FILE, 'w') as f:
+            json.dump(jobs_data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving jobs to persistence: {e}")
+
+# Load existing jobs on startup
+load_jobs()
+
+# Cleanup old jobs (older than 24 hours)
+def cleanup_old_jobs():
+    """Remove jobs older than 24 hours"""
+    from datetime import datetime, timedelta
+    current_time = datetime.now()
+    jobs_to_remove = []
+    
+    for job_id, job in jobs.items():
+        # Check if job is older than 24 hours
+        if job.created_at:
+            try:
+                job_time = datetime.fromisoformat(job.created_at)
+                job_age = current_time - job_time
+                if job_age > timedelta(hours=24):
+                    jobs_to_remove.append(job_id)
+            except (ValueError, TypeError):
+                # If created_at is invalid, remove the job
+                jobs_to_remove.append(job_id)
+    
+    for job_id in jobs_to_remove:
+        del jobs[job_id]
+        print(f"Removed old job: {job_id}")
+    
+    if jobs_to_remove:
+        save_jobs()
+
+# Cleanup old jobs on startup
+cleanup_old_jobs()
+
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
@@ -129,8 +186,12 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
             progress=0,
             message="Analysis queued",
             result=None,
-            error=None
+            error=None,
+            created_at=datetime.now().isoformat()
         )
+        
+        # Save to persistence
+        save_jobs()
         
         # Start analysis in background
         asyncio.create_task(run_analysis(job_id, request, trace_id))
@@ -147,10 +208,18 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
 async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Run analysis in background with progress updates"""
     try:
+        print(f"Starting analysis for job {job_id}")
+        
+        # Check if job still exists
+        if job_id not in jobs:
+            print(f"Job {job_id} not found in jobs dictionary")
+            return
+            
         # Update status
         jobs[job_id].status = "processing"
         jobs[job_id].progress = 10
         jobs[job_id].message = "Extracting text from PDF"
+        save_jobs()  # Save status update
         await manager.send_message(job_id, jobs[job_id].dict())
         
         # Extract text with or without tracing
@@ -194,6 +263,7 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         
         jobs[job_id].progress = 30
         jobs[job_id].message = "Text extracted, starting analysis"
+        save_jobs()  # Save progress update
         await manager.send_message(job_id, jobs[job_id].dict())
         
         # Run analysis
@@ -215,6 +285,7 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         jobs[job_id].progress = 100
         jobs[job_id].message = "Analysis completed successfully"
         jobs[job_id].result = result
+        save_jobs()  # Save completion
         
         # Add trace_id to result if available
         if trace_id:
@@ -223,18 +294,42 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         await manager.send_message(job_id, jobs[job_id].dict())
         
     except Exception as e:
-        jobs[job_id].status = "failed"
-        jobs[job_id].error = str(e)
-        jobs[job_id].message = f"Analysis failed: {str(e)}"
-        await manager.send_message(job_id, jobs[job_id].dict())
+        print(f"Analysis failed for job {job_id}: {str(e)}")
+        print(f"Exception type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        # Only update job status if job still exists
+        if job_id in jobs:
+            jobs[job_id].status = "failed"
+            jobs[job_id].error = str(e)
+            jobs[job_id].message = f"Analysis failed: {str(e)}"
+            save_jobs()  # Save error status
+            await manager.send_message(job_id, jobs[job_id].dict())
+        else:
+            print(f"Job {job_id} not found when trying to update error status")
+
+@app.get("/api/jobs")
+async def list_jobs():
+    """List all jobs (for debugging)"""
+    return {
+        "total_jobs": len(jobs),
+        "jobs": {job_id: job.dict() for job_id, job in jobs.items()}
+    }
 
 @app.get("/api/jobs/{job_id}/status")
 async def get_job_status(job_id: str):
     """Get job status"""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+    print(f"Requesting status for job: {job_id}")
+    print(f"Available jobs: {list(jobs.keys())}")
     
-    return jobs[job_id].dict()
+    if job_id not in jobs:
+        print(f"Job {job_id} not found in jobs dictionary")
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    job_status = jobs[job_id].dict()
+    print(f"Job {job_id} status: {job_status}")
+    return job_status
 
 @app.get("/api/jobs/{job_id}/results")
 async def get_job_results(job_id: str):

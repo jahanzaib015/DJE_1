@@ -126,4 +126,15 @@ export class AnalysisService {
       throw new Error(`Connection test failed: ${error.response?.data?.error || error.message}`);
     }
   }
+
+  static async listJobs() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/jobs`);
+      console.log('Available jobs:', response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('Failed to list jobs:', error);
+      throw new Error(`Failed to list jobs: ${error.response?.data?.error || error.message}`);
+    }
+  }
 }

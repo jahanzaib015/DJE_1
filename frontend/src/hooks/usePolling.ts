@@ -15,8 +15,23 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
       try {
         const status = await AnalysisService.getJobStatus(jobId);
         onUpdate(status);
-      } catch (error) {
+      } catch (error: any) {
         console.error('Polling error:', error);
+        console.error('Error details:', {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data
+        });
+        
+        // If it's a 404 error, the job might not exist anymore
+        if (error.response?.status === 404) {
+          console.error(`Job ${jobId} not found on server`);
+          // Stop polling for this job
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+        }
       }
     };
 
