@@ -5,7 +5,6 @@ import time
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from .interfaces.llm_provider_interface import LLMProviderInterface
-# from .providers.ollama_provider import OllamaProvider  # COMMENTED OUT: Only using OpenAI for now
 from .providers.openai_provider import OpenAIProvider
 from ..utils.trace_handler import TraceHandler
 
@@ -23,11 +22,10 @@ class LLMProviderInterface(ABC):
 
 
 class LLMService:
-    """Service for managing different LLM providers"""
+    """Service for managing different LLM providers with fallback and validation"""
     
     def __init__(self):
         self.providers = {
-            # "ollama": OllamaProvider(),  # COMMENTED OUT: Only using OpenAI for now
             "openai": OpenAIProvider()
         }
         self.trace_handler = TraceHandler()
@@ -41,8 +39,7 @@ class LLMService:
     async def analyze_document(self, text: str, provider: str, model: str, trace_id: Optional[str] = None) -> Dict:
         """Analyze document using specified provider with automatic fallback"""
         provider_instance = self.get_provider(provider)
-        
-        # Log prompt if trace_id is provided
+
         if trace_id:
             messages = await self._get_llm_messages(provider_instance, text, model)
             prompt_data = {
@@ -57,28 +54,34 @@ class LLMService:
                 "messages": messages
             }
             await self.trace_handler.save_llm_prompt(trace_id, prompt_data)
-        
+
         try:
-            # Try requested model first
-            return await provider_instance.analyze_document(text, model)
+            result = await provider_instance.analyze_document(text, model)
+            return self._validate_result(result)
         except Exception as e:
-            # Fallback if model not available or returns a 404
-            if "404" in str(e) or "does not exist" in str(e):
+            err_msg = str(e).lower()
+
+            # Handle model not available
+            if "404" in err_msg or "does not exist" in err_msg:
                 print(f"[Warning] Model '{model}' unavailable. Falling back to 'gpt-4o-mini'")
-                return await provider_instance.analyze_document(text, "gpt-4o-mini")
+                try:
+                    result = await provider_instance.analyze_document(text, "gpt-4o-mini")
+                    return self._validate_result(result)
+                except Exception as inner_e:
+                    print(f"[Warning] gpt-4o-mini also failed, falling back to 'gpt-3.5-turbo'")
+                    result = await provider_instance.analyze_document(text, "gpt-3.5-turbo")
+                    return self._validate_result(result)
+            
             raise e
-    
+
     async def analyze_document_with_tracing(self, text: str, provider: str, model: str, trace_id: str) -> Dict:
-        """Analyze document with forensic tracing"""
+        """Analyze document with forensic tracing and validation"""
         provider_instance = self.get_provider(provider)
-        
-        # Get the exact messages array that will be sent to the LLM
         messages = await self._get_llm_messages(provider_instance, text, model)
-        
-        # Create comprehensive prompt data for tracing
+
         prompt_data = {
             "model": model,
-            "temperature": 0.1,  # Default temperature
+            "temperature": 0.1,
             "timestamp": time.time(),
             "trace_id": trace_id,
             "provider": provider,
@@ -86,43 +89,30 @@ class LLMService:
             "text_preview": text[:500] + "..." if len(text) > 500 else text,
             "messages": messages
         }
-        
-        # Save exact prompt data
         await self.trace_handler.save_llm_prompt(trace_id, prompt_data)
-        
+
         try:
-            # Get analysis result
             result = await provider_instance.analyze_document(text, model)
-            
-            # Create response data for tracing
-            response_data = {
+            validated = self._validate_result(result)
+            await self.trace_handler.save_llm_response(trace_id, {
                 "provider": provider,
                 "model": model,
-                "result": result,
+                "result": validated,
                 "timestamp": time.time(),
                 "trace_id": trace_id,
                 "success": True
-            }
-            
-            # Save response data
-            await self.trace_handler.save_llm_response(trace_id, response_data)
-            
-            return result
-            
+            })
+            return validated
+
         except Exception as e:
-            # Create error response data for tracing
-            error_data = {
+            await self.trace_handler.save_llm_response(trace_id, {
                 "provider": provider,
                 "model": model,
                 "error": str(e),
                 "timestamp": time.time(),
                 "trace_id": trace_id,
                 "success": False
-            }
-            
-            # Save error response
-            await self.trace_handler.save_llm_response(trace_id, error_data)
-            
+            })
             raise e
     
     def get_ollama_models(self) -> List[str]:
@@ -134,14 +124,23 @@ class LLMService:
     
     def get_openai_models(self) -> List[str]:
         """Get available OpenAI models"""
-        # Updated list — includes the ones your API key supports
         return ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"]
-    
+
+    def _validate_result(self, result: Dict) -> Dict:
+        """Strictly validate the LLM output structure"""
+        if not isinstance(result, dict):
+            raise ValueError(f"Unexpected LLM output: {result}")
+
+        expected_keys = {"bonds", "stocks", "funds", "derivatives"}
+        missing = expected_keys - set(result.keys())
+        if missing:
+            raise ValueError(f"Missing expected keys in LLM output: {missing}")
+
+        return result
+
     async def _get_llm_messages(self, provider_instance, text: str, model: str) -> List[Dict[str, str]]:
         """Extract the exact messages array that will be sent to the LLM"""
-        # For OpenAI provider, we need to reconstruct the messages array
         if hasattr(provider_instance, 'api_key') and provider_instance.api_key:
-            # This is the OpenAI provider - reconstruct the exact messages
             prompt = f"""Analyze this financial document and respond with ONLY a JSON object.
 
 Document: {text[:2000]}
@@ -169,7 +168,6 @@ Only mark as true if the document explicitly allows that type of investment. For
                 }
             ]
         else:
-            # For other providers, return a generic structure
             return [
                 {
                     "role": "system",
