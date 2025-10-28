@@ -11,7 +11,7 @@ from config import OPENAI_API_KEY
 
 
 class OpenAIProvider(LLMProviderInterface):
-    """OpenAI ChatGPT provider implementation with enforced JSON output"""
+    """OpenAI ChatGPT provider with strong JSON enforcement and fallback"""
 
     def __init__(self):
         self.api_key = OPENAI_API_KEY
@@ -97,89 +97,61 @@ If unsure, still return valid JSON — never output plain text.
                 llm_response = data["choices"][0]["message"]["content"].strip()
                 print(f"🔍 Raw LLM response: {llm_response}")
 
-                # --- 🧠 FIX START: Handle non-JSON garbage like 'bonds' ---
+                # ✅ Step 1: Detect invalid responses like "bonds"
                 if not llm_response.startswith("{") or not llm_response.endswith("}"):
-                    print("⚠️ LLM returned plain text — auto-wrapping into JSON fallback.")
-                    return {
-                        "bonds": {"allowed": "Uncertain", "evidence": llm_response},
-                        "stocks": {"allowed": "Uncertain", "evidence": llm_response},
-                        "funds": {"allowed": "Uncertain", "evidence": llm_response},
-                        "derivatives": {"allowed": "Uncertain", "evidence": llm_response},
-                    }
-                # --- 🧠 FIX END ---
+                    print(f"⚠️ LLM returned invalid text: '{llm_response}' → applying fallback JSON")
 
+                    return {
+                        "bonds": {"allowed": "Uncertain", "evidence": f"Invalid model output: {llm_response}"},
+                        "stocks": {"allowed": "Uncertain", "evidence": f"Invalid model output: {llm_response}"},
+                        "funds": {"allowed": "Uncertain", "evidence": f"Invalid model output: {llm_response}"},
+                        "derivatives": {"allowed": "Uncertain", "evidence": f"Invalid model output: {llm_response}"},
+                    }
+
+                # ✅ Step 2: Try to parse JSON
                 try:
                     parsed_json = json.loads(llm_response)
                     return self._validate_and_normalize_response(parsed_json)
-                except json.JSONDecodeError:
-                    print("⚠️ JSON decode failed, retrying with stricter instruction...")
-                    return await self._retry_with_json_prompt(text, model, client, headers)
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ JSON parse failed: {e} → applying fallback JSON")
+                    return {
+                        "bonds": {"allowed": "Uncertain", "evidence": f"Parsing error: {str(e)}"},
+                        "stocks": {"allowed": "Uncertain", "evidence": f"Parsing error: {str(e)}"},
+                        "funds": {"allowed": "Uncertain", "evidence": f"Parsing error: {str(e)}"},
+                        "derivatives": {"allowed": "Uncertain", "evidence": f"Parsing error: {str(e)}"},
+                    }
 
         except Exception as e:
-            raise Exception(f"OpenAI analysis failed: {str(e)}")
-
-    async def _retry_with_json_prompt(self, text: str, model: str, client, headers) -> Dict:
-        """Retry once if the model failed to return valid JSON."""
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Return ONLY valid JSON matching the schema. Do not output plain text.",
-                },
-                {
-                    "role": "user",
-                    "content": f"Re-analyze this document and output valid JSON only. Document:\n{text[:2000]}",
-                },
-            ],
-            "temperature": 0.2,
-            "max_tokens": 1000,
-        }
-
-        response = await client.post(
-            f"{self.base_url}/chat/completions", json=payload, headers=headers
-        )
-        data = response.json()
-        llm_response = data["choices"][0]["message"]["content"].strip()
-        print(f"🔁 Retry LLM response: {llm_response}")
-
-        try:
-            parsed_json = json.loads(llm_response)
-            return self._validate_and_normalize_response(parsed_json)
-        except json.JSONDecodeError:
-            raise ValueError(f"LLM returned invalid JSON even after retry: {llm_response}")
+            print(f"🚨 OpenAI analysis failed: {e}")
+            return {
+                "bonds": {"allowed": "Uncertain", "evidence": f"OpenAI error: {str(e)}"},
+                "stocks": {"allowed": "Uncertain", "evidence": f"OpenAI error: {str(e)}"},
+                "funds": {"allowed": "Uncertain", "evidence": f"OpenAI error: {str(e)}"},
+                "derivatives": {"allowed": "Uncertain", "evidence": f"OpenAI error: {str(e)}"},
+            }
 
     def _validate_and_normalize_response(self, parsed_json: Dict) -> Dict:
         """Validate and normalize the LLM response to ensure proper format"""
         expected_keys = ["bonds", "stocks", "funds", "derivatives"]
-        normalized_response = {}
-
+        normalized = {}
         for key in expected_keys:
             value = parsed_json.get(key, {})
             if isinstance(value, dict) and "allowed" in value:
-                allowed = value["allowed"]
-                evidence = value.get("evidence", "")
-
-                if isinstance(allowed, str) and allowed.lower() in ["uncertain"]:
-                    normalized_response[key] = {"allowed": "Uncertain", "evidence": evidence}
-                elif allowed in [True, "true", "True"]:
-                    normalized_response[key] = {"allowed": True, "evidence": evidence}
-                elif allowed in [False, "false", "False"]:
-                    normalized_response[key] = {"allowed": False, "evidence": evidence}
-                else:
-                    normalized_response[key] = {"allowed": "Uncertain", "evidence": str(allowed)}
-            else:
-                normalized_response[key] = {
-                    "allowed": "Uncertain",
-                    "evidence": "Missing or invalid format",
+                normalized[key] = {
+                    "allowed": value.get("allowed", "Uncertain"),
+                    "evidence": value.get("evidence", "No explicit evidence found.")
                 }
-
-        return normalized_response
+            else:
+                normalized[key] = {
+                    "allowed": "Uncertain",
+                    "evidence": "Missing or invalid key in model response."
+                }
+        return normalized
 
     def get_available_models(self) -> List[str]:
-        """Get available OpenAI models"""
-        return ["gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+        """List supported OpenAI models"""
+        return ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
 
     async def generate(self, prompt: str) -> str:
-        """Legacy compatibility — not used in this app."""
-        return "generate() method placeholder — not implemented"
+        """Legacy method for compatibility"""
+        return "generate() method placeholder — not used."
