@@ -296,24 +296,34 @@ class AnalysisService:
                            investment_type: str, section_keys: list) -> None:
         """Apply LLM decision to data structure, handling Uncertain responses"""
         try:
+            # Map plural investment types to singular section names
+            section_mapping = {
+                "bonds": "bond",
+                "stocks": "stock", 
+                "funds": "fund",
+                "derivatives": "future"  # Map derivatives to future section
+            }
+            
+            section_name = section_mapping.get(investment_type, investment_type)
+            
             decision = analysis.get(investment_type, {}).get("allowed")
             evidence_text = analysis.get(investment_type, {}).get("evidence", "")
             
             if decision == True:
                 for key in section_keys:
                     if key != "special_other_restrictions":
-                        data["sections"][investment_type][key]["allowed"] = True
-                        data["sections"][investment_type][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} allowed - {evidence_text}"
-                        data["sections"][investment_type][key]["evidence"] = {
+                        data["sections"][section_name][key]["allowed"] = True
+                        data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} allowed - {evidence_text}"
+                        data["sections"][section_name][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else f"LLM analysis indicates {investment_type} are permitted"
                         }
             elif decision == "Uncertain":
                 for key in section_keys:
                     if key != "special_other_restrictions":
-                        data["sections"][investment_type][key]["allowed"] = False
-                        data["sections"][investment_type][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} uncertain - {evidence_text}"
-                        data["sections"][investment_type][key]["evidence"] = {
+                        data["sections"][section_name][key]["allowed"] = False
+                        data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} uncertain - {evidence_text}"
+                        data["sections"][section_name][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
@@ -323,9 +333,9 @@ class AnalysisService:
             # Set all items to uncertain on error
             for key in section_keys:
                 if key != "special_other_restrictions":
-                    data["sections"][investment_type][key]["allowed"] = False
-                    data["sections"][investment_type][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} error - {str(e)}"
-                    data["sections"][investment_type][key]["evidence"] = {
+                    data["sections"][section_name][key]["allowed"] = False
+                    data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} error - {str(e)}"
+                    data["sections"][section_name][key]["evidence"] = {
                         "page": 1,
                         "text": f"Error processing {investment_type}: {str(e)}"
                     }
