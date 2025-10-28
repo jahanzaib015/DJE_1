@@ -173,3 +173,7 @@ If unsure, still return valid JSON — never output plain text.
     def get_available_models(self) -> List[str]:
         """Get available OpenAI models"""
         return ["gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+
+    async def generate(self, prompt: str) -> str:
+        """Legacy compatibility — not used in this app."""
+        return "generate() method placeholder — not implemented"
