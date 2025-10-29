@@ -5,6 +5,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
+import openai
 from .interfaces.llm_provider_interface import LLMProviderInterface
 from .providers.openai_provider import OpenAIProvider
 from ..utils.trace_handler import TraceHandler
@@ -56,7 +57,16 @@ class LLMService:
     """Service for managing different LLM providers with fallback and validation"""
     
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Disable proxy settings to prevent the "proxies" argument error
+        openai.proxy = None
+        
+        # Get API key with proper validation
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not set in environment variables.")
+        
+        # Initialize AsyncOpenAI client
+        self.client = AsyncOpenAI(api_key=api_key)
         self.providers = {
             "openai": OpenAIProvider()
         }
