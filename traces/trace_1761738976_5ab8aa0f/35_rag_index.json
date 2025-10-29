@@ -1,0 +1,63 @@
+{
+  "doc_id": "trace_1761738976_5ab8aa0f",
+  "chunks": [
+    {
+      "chunk_id": 1,
+      "start_char": 0,
+      "end_char": 939,
+      "text": "Page 1: Executive Summary\n    \n    This policy document outlines our investment guidelines for renewable energy projects.\n    The company is committed to sustainable investing and will prioritize clean energy initiatives.\n    \n    Page 2: Investment Categories\n    \n    We will invest in the following renewable energy sectors:\n    - Solar photovoltaic systems\n    - Wind energy projects\n    - Hydroelectric power\n    - Geothermal energy\n    - Biomass and bioenergy\n    \n    Page 3: Exclusion Policy\n    \n    The following investments are strictly prohibited:\n    - Coal-fired power plants\n    - Oil and gas exploration\n    - Nuclear energy projects (unless specifically approved)\n    - Any fossil fuel infrastructure\n    \n    Page 4: Investment Limits\n    \n    Maximum investment amounts per project:\n    - Solar: $50 million\n    - Wind: $75 million\n    - Hydro: $100 million\n    - Geothermal: $25 million\n    \n    Page 5: Risk Assessment",
+      "length": 939,
+      "token_estimate": 234,
+      "prev_chunk": null,
+      "next_chunk": 2,
+      "has_negations": true,
+      "type": "text"
+    },
+    {
+      "chunk_id": 2,
+      "start_char": 939,
+      "end_char": 1219,
+      "text": "- Solar: $50 million\n    - Wind: $75 million\n    - Hydro: $100 million\n    - Geothermal: $25 million\n    \n    Page 5: Risk Assessment\n    \n    All investments must undergo comprehensive risk assessment.\n    Projects with environmental concerns will be excluded from consideration.",
+      "length": 280,
+      "token_estimate": 70,
+      "prev_chunk": 1,
+      "next_chunk": null,
+      "has_negations": true,
+      "type": "text"
+    }
+  ],
+  "documents": [
+    "Page 1: Executive Summary\n    \n    This policy document outlines our investment guidelines for renewable energy projects.\n    The company is committed to sustainable investing and will prioritize clean energy initiatives.\n    \n    Page 2: Investment Categories\n    \n    We will invest in the following renewable energy sectors:\n    - Solar photovoltaic systems\n    - Wind energy projects\n    - Hydroelectric power\n    - Geothermal energy\n    - Biomass and bioenergy\n    \n    Page 3: Exclusion Policy\n    \n    The following investments are strictly prohibited:\n    - Coal-fired power plants\n    - Oil and gas exploration\n    - Nuclear energy projects (unless specifically approved)\n    - Any fossil fuel infrastructure\n    \n    Page 4: Investment Limits\n    \n    Maximum investment amounts per project:\n    - Solar: $50 million\n    - Wind: $75 million\n    - Hydro: $100 million\n    - Geothermal: $25 million\n    \n    Page 5: Risk Assessment",
+    "- Solar: $50 million\n    - Wind: $75 million\n    - Hydro: $100 million\n    - Geothermal: $25 million\n    \n    Page 5: Risk Assessment\n    \n    All investments must undergo comprehensive risk assessment.\n    Projects with environmental concerns will be excluded from consideration."
+  ],
+  "metadatas": [
+    {
+      "doc_id": "trace_1761738976_5ab8aa0f",
+      "chunk_idx": 0,
+      "chunk_type": "text",
+      "type": "text",
+      "source": "C:\\Users\\JAHANZ~1\\AppData\\Local\\Temp\\tmpw3ume66a\\test_policy.pdf",
+      "page": 1,
+      "chunk_id": 1,
+      "has_negation": true,
+      "char_len": 939
+    },
+    {
+      "doc_id": "trace_1761738976_5ab8aa0f",
+      "chunk_idx": 1,
+      "chunk_type": "text",
+      "type": "text",
+      "source": "C:\\Users\\JAHANZ~1\\AppData\\Local\\Temp\\tmpw3ume66a\\test_policy.pdf",
+      "page": 2,
+      "chunk_id": 2,
+      "has_negation": true,
+      "char_len": 280
+    }
+  ],
+  "ids": [
+    "chunk_0",
+    "chunk_1"
+  ],
+  "created_at": "2025-10-29T12:00:00Z",
+  "mode": "mock"
+}

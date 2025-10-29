@@ -1,0 +1,19 @@
+{
+  "retrieval_log": {
+    "query": "exclusion policy",
+    "retrieved_chunks": [
+      {
+        "text": "Page 1: Executive Summary\n    \n    This policy document outlines our investment guidelines for renewable energy projects.\n    The company is committed to sustainable investing and will prioritize clean energy initiatives.\n    \n    Page 2: Investment Categories\n    \n    We will invest in the following renewable energy sectors:\n    - Solar photovoltaic systems\n    - Wind energy projects\n    - Hydroelectric power\n    - Geothermal energy\n    - Biomass and bioenergy\n    \n    Page 3: Exclusion Policy\n    \n    The following investments are strictly prohibited:\n    - Coal-fired power plants\n    - Oil and gas exploration\n    - Nuclear energy projects (unless specifically approved)\n    - Any fossil fuel infrastructure\n    \n    Page 4: Investment Limits\n    \n    Maximum investment amounts per project:\n    - Solar: $50 million\n    - Wind: $75 million\n    - Hydro: $100 million\n    - Geothermal: $25 million\n    \n    Page 5: Risk Assessment",
+        "page": 1,
+        "type": "text",
+        "relevance_score": 0.008403361344537785,
+        "chunk_id": 1,
+        "source": "C:\\Users\\JAHANZ~1\\AppData\\Local\\Temp\\tmpw3ume66a\\test_policy.pdf",
+        "has_negations": true,
+        "length": 939
+      }
+    ],
+    "total_chunks": 1
+  },
+  "timestamp": "2025-10-29T12:56:16.541874"
+}

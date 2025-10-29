@@ -4,7 +4,16 @@ import json
 import re
 import hashlib
 import os
+import uuid
 from typing import Dict, List, Any, Optional
+
+# Try to import camelot for table extraction
+try:
+    import camelot
+    CAMELOT_AVAILABLE = True
+except ImportError:
+    CAMELOT_AVAILABLE = False
+    print("Warning: Camelot not available. Table extraction will be disabled.")
 
 # Try to import chromadb, fall back to mock if not available
 try:
@@ -35,6 +44,123 @@ def detect_flags(text: str) -> Dict[str, Any]:
     has_neg = bool(re.search(NEG_CUES, text, flags=re.I))
     return {"has_negation": has_neg, "char_len": len(text)}
 
+def extract_tables(pdf_path: str) -> List[Dict[str, Any]]:
+    """Extract tables from PDF using Camelot"""
+    if not CAMELOT_AVAILABLE:
+        return []
+    
+    try:
+        tables = camelot.read_pdf(pdf_path, pages="all", flavor="stream")
+        table_chunks = []
+        
+        for i, table in enumerate(tables):
+            # Convert table to string format
+            table_text = table.df.to_string(index=False, header=False)
+            
+            # Create table chunk with metadata
+            table_chunks.append({
+                "text": table_text,
+                "type": "table",
+                "table_id": i + 1,
+                "shape": table.df.shape,
+                "accuracy": table.accuracy,
+                "page": table.page,
+                "length": len(table_text)
+            })
+        
+        return table_chunks
+        
+    except Exception as e:
+        print(f"Warning: Table extraction failed: {str(e)}")
+        return []
+
+def chunk_text(text: str) -> List[Dict[str, Any]]:
+    """Create text chunks using LangChain's RecursiveCharacterTextSplitter"""
+    # Try to import LangChain text splitter
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        LANGCHAIN_AVAILABLE = True
+    except ImportError:
+        LANGCHAIN_AVAILABLE = False
+    
+    if not LANGCHAIN_AVAILABLE:
+        # Fallback to simple chunking
+        return _chunk_text_fallback(text)
+    
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,        # ~700–1 000 tokens per chunk
+        chunk_overlap=150,      # 15% overlap keeps context
+        separators=["\n\n", "\n", ". ", ";", " "]
+    )
+    chunks = splitter.split_text(text)
+    
+    # Convert to the expected format
+    result = []
+    char_position = 0
+    
+    for i, chunk_text in enumerate(chunks):
+        chunk_length = len(chunk_text)
+        result.append({
+            "chunk_id": i + 1,
+            "start_char": char_position,
+            "end_char": char_position + chunk_length,
+            "text": chunk_text,
+            "length": chunk_length,
+            "token_estimate": chunk_length // 4,
+            "prev_chunk": i if i > 0 else None,
+            "next_chunk": i + 2 if i < len(chunks) - 1 else None,
+            "has_negations": bool(re.search(NEG_CUES, chunk_text, flags=re.I)),
+            "type": "text"
+        })
+        char_position += chunk_length
+    
+    return result
+
+def _chunk_text_fallback(text: str) -> List[Dict[str, Any]]:
+    """Fallback text chunking when LangChain is not available"""
+    # Simple chunking by paragraphs
+    paragraphs = re.split(r'\n\s*\n', text)
+    chunks = []
+    char_position = 0
+    
+    for i, para in enumerate(paragraphs):
+        if para.strip():
+            chunk_length = len(para)
+            chunks.append({
+                "chunk_id": i + 1,
+                "start_char": char_position,
+                "end_char": char_position + chunk_length,
+                "text": para.strip(),
+                "length": chunk_length,
+                "token_estimate": chunk_length // 4,
+                "prev_chunk": i if i > 0 else None,
+                "next_chunk": i + 2 if i < len(paragraphs) - 1 else None,
+                "has_negations": bool(re.search(NEG_CUES, para, flags=re.I)),
+                "type": "text"
+            })
+            char_position += chunk_length
+    
+    return chunks
+
+def build_chunks(pdf_path: str, extracted_text: str) -> List[Dict[str, Any]]:
+    """Build combined chunks from text and tables"""
+    # Extract text chunks
+    text_chunks = chunk_text(extracted_text)
+    
+    # Extract table chunks
+    table_chunks = extract_tables(pdf_path)
+    
+    # Combine all chunks
+    all_chunks = text_chunks + table_chunks
+    
+    # Update chunk IDs to be sequential across all chunks
+    for i, chunk in enumerate(all_chunks):
+        chunk["chunk_id"] = i + 1
+        chunk["prev_chunk"] = i if i > 0 else None
+        chunk["next_chunk"] = i + 2 if i < len(all_chunks) - 1 else None
+    
+    return all_chunks
+
 def embed(texts: List[str]) -> List[List[float]]:
     """Generate embeddings using OpenAI text-embedding-3-large"""
     if not OPENAI_AVAILABLE or not client:
@@ -45,15 +171,16 @@ def embed(texts: List[str]) -> List[List[float]]:
     resp = client.embeddings.create(model="text-embedding-3-large", input=texts)
     return [d.embedding for d in resp.data]
 
-def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/chroma", doc_id: str = None) -> Dict[str, Any]:
+def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/chroma", doc_id: str = None, pdf_path: str = None) -> Dict[str, Any]:
     """
     Index PDF chunks into ChromaDB for RAG retrieval
     
     Args:
         clean_text_path: Path to cleaned text file (20_clean_text.txt)
-        chunks_path: Path to chunks JSONL file (30_chunks.jsonl)
+        chunks_path: Path to chunks JSONL file (30_chunks.jsonl) - optional if using new chunking
         vectordb_dir: Directory for ChromaDB storage
         doc_id: Unique document identifier (trace_id)
+        pdf_path: Path to original PDF file for table extraction
     
     Returns:
         Dictionary with indexing results
@@ -62,13 +189,21 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
         # Read clean text
         clean_text = Path(clean_text_path).read_text(encoding="utf-8")
         
-        # Read chunks from JSONL
-        chunks = []
-        with open(chunks_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    chunks.append(json.loads(line))
+        # Use new chunking approach if PDF path is provided
+        if pdf_path and os.path.exists(pdf_path):
+            chunks = build_chunks(pdf_path, clean_text)
+        else:
+            # Fallback to reading chunks from JSONL
+            chunks = []
+            if os.path.exists(chunks_path):
+                with open(chunks_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            chunks.append(json.loads(line))
+            else:
+                # If no chunks file exists, use text-only chunking
+                chunks = chunk_text(clean_text)
         
         # Prepare documents to upsert
         documents, metadatas, ids = [], [], []
@@ -77,12 +212,17 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             # Handle both dict and string chunk formats
             if isinstance(ch, dict):
                 text = ch.get("text", "")
+                chunk_type = ch.get("type", "text")
+                
                 meta = {
                     "doc_id": doc_id,
                     "chunk_idx": i,
+                    "chunk_type": chunk_type,
+                    "type": chunk_type,  # For filtering compatibility
+                    "source": pdf_path or "unknown",  # PDF source path
+                    "page": ch.get("page"),
                     "span_start": ch.get("span", [None, None])[0],
                     "span_end": ch.get("span", [None, None])[1],
-                    "page": ch.get("page"),
                     "chunk_id": ch.get("chunk_id"),
                     "start_char": ch.get("start_char"),
                     "end_char": ch.get("end_char"),
@@ -91,12 +231,24 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
                     "next_chunk": ch.get("next_chunk"),
                     **detect_flags(text)
                 }
+                
+                # Add table-specific metadata
+                if chunk_type == "table":
+                    meta.update({
+                        "table_id": ch.get("table_id"),
+                        "table_shape": ch.get("shape"),
+                        "table_accuracy": ch.get("accuracy"),
+                        "table_page": ch.get("page")
+                    })
             else:
                 # Fallback for string chunks
                 text = str(ch)
                 meta = {
                     "doc_id": doc_id,
                     "chunk_idx": i,
+                    "chunk_type": "text",
+                    "type": "text",  # For filtering compatibility
+                    "source": pdf_path or "unknown",  # PDF source path
                     "span_start": None,
                     "span_end": None,
                     "page": None,
@@ -111,7 +263,7 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             
             documents.append(text)
             metadatas.append(meta)
-            ids.append(f"{doc_id}_{i}_{sha1(text)[:8]}")
+            ids.append(str(uuid.uuid4()))
         
         # Check if ChromaDB is available
         if not CHROMADB_AVAILABLE:
@@ -267,6 +419,74 @@ def query_rag(vectordb_dir: str = "/tmp/chroma", query: str = "", n_results: int
             "query": query,
             "results": [],
             "total_results": 0
+        }
+
+def retrieve_rules(query: str, collection, top_k: int = 3, doc_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Retrieve policy-relevant chunks with metadata filtering
+    
+    Args:
+        query: Search query
+        collection: ChromaDB collection
+        top_k: Number of results to return
+        doc_id: Optional document ID to filter results
+    
+    Returns:
+        Dictionary with filtered query results
+    """
+    try:
+        # Build where clause for filtering
+        where_clause = {
+            "type": {"$in": ["text", "table"]}  # Filter out junk, focus on policy-relevant chunks
+        }
+        
+        # Add document ID filter if specified
+        if doc_id:
+            where_clause["doc_id"] = doc_id
+        
+        # Query collection with filtering
+        results = collection.query(
+            query_texts=[query],
+            n_results=top_k,
+            where=where_clause
+        )
+        
+        # Format results
+        formatted_results = []
+        if results['documents'] and results['documents'][0]:
+            for i, (doc, meta, dist) in enumerate(zip(
+                results['documents'][0],
+                results['metadatas'][0],
+                results['distances'][0]
+            )):
+                formatted_results.append({
+                    "rank": i + 1,
+                    "text": doc,
+                    "metadata": meta,
+                    "distance": dist,
+                    "relevance_score": 1 - dist,  # Convert distance to relevance
+                    "type": meta.get("type", "unknown"),
+                    "source": meta.get("source", "unknown"),
+                    "page": meta.get("page")
+                })
+        
+        return {
+            "success": True,
+            "query": query,
+            "results": formatted_results,
+            "total_results": len(formatted_results),
+            "filtered": True,
+            "mode": "chromadb"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "query": query,
+            "results": [],
+            "total_results": 0,
+            "filtered": True
         }
 
 def _query_rag_mock(vectordb_dir: str, query: str, n_results: int = 5, doc_id: Optional[str] = None) -> Dict[str, Any]:

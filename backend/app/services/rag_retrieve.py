@@ -2,6 +2,7 @@ from chromadb import PersistentClient
 from typing import List, Dict, Any, Optional
 import os
 import json
+from ..utils.trace_handler import TraceHandler
 
 # Try to import chromadb, fall back to mock if not available
 try:
@@ -12,7 +13,7 @@ except ImportError:
     print("Warning: ChromaDB not available. RAG retrieval will use mock mode.")
 
 
-def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tmp/chroma") -> List[Dict[str, Any]]:
+def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tmp/chroma", trace_id: str = None) -> List[Dict[str, Any]]:
     """
     Retrieve top-k most relevant chunks for a decision item (sector, country, etc.)
     with bias toward chunks containing negations.
@@ -22,6 +23,7 @@ def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tm
         doc_id: Document identifier to filter results
         k: Number of top results to return
         vectordb_dir: Directory containing ChromaDB storage
+        trace_id: Optional trace ID for logging retrieval results
     
     Returns:
         List of dictionaries containing retrieved chunks with metadata
@@ -29,17 +31,20 @@ def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tm
     try:
         # Check if ChromaDB is available
         if not CHROMADB_AVAILABLE:
-            return _retrieve_rules_mock(query, doc_id, k, vectordb_dir)
+            return _retrieve_rules_mock(query, doc_id, k, vectordb_dir, trace_id)
         
         # Real ChromaDB mode
         db = PersistentClient(path=vectordb_dir)
         coll = db.get_collection("policy_rules")
         
-        # Query with more results than needed for reranking
+        # Query with metadata filtering for policy-relevant chunks
         res = coll.query(
             query_texts=[query],
             n_results=k * 2,  # Get more results for reranking
-            where={"doc_id": doc_id}
+            where={
+                "doc_id": doc_id,
+                "type": {"$in": ["text", "table"]}  # Filter out junk, focus on policy-relevant chunks
+            }
         )
         
         # Check if we got any results
@@ -63,14 +68,52 @@ def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tm
             x["meta"].get("char_len", 1)  # Then shorter chunks (crisper rules)
         ))
         
-        return items[:k]
+        results = items[:k]
+        
+        # Log retrieval results if trace_id is provided
+        if trace_id:
+            try:
+                trace_handler = TraceHandler()
+                # Convert results to format expected by log_retrieval
+                log_chunks = []
+                for item in results:
+                    log_chunk = {
+                        "text": item["text"],
+                        "meta": item["meta"],
+                        "page": item["meta"].get("page"),
+                        "type": item["meta"].get("type", "text"),
+                        "relevance_score": 1 - item["distance"],  # Convert distance to relevance score
+                        "chunk_id": item["meta"].get("chunk_id"),
+                        "source": item["meta"].get("source"),
+                        "has_negations": item["meta"].get("has_negation", False),
+                        "length": item["meta"].get("char_len", len(item["text"]))
+                    }
+                    log_chunks.append(log_chunk)
+                
+                # Log asynchronously (fire and forget)
+                import asyncio
+                try:
+                    asyncio.create_task(trace_handler.log_retrieval(trace_id, log_chunks))
+                except RuntimeError:
+                    # If no event loop is running, use synchronous logging
+                    trace_handler.save_trace(trace_id, {
+                        "retrieval_log": {
+                            "query": query,
+                            "retrieved_chunks": log_chunks,
+                            "total_chunks": len(log_chunks)
+                        }
+                    })
+            except Exception as e:
+                print(f"Warning: Failed to log retrieval results: {e}")
+        
+        return results
         
     except Exception as e:
         print(f"Error in retrieve_rules: {e}")
         return []
 
 
-def _retrieve_rules_mock(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tmp/chroma") -> List[Dict[str, Any]]:
+def _retrieve_rules_mock(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tmp/chroma", trace_id: str = None) -> List[Dict[str, Any]]:
     """
     Mock implementation of retrieve_rules using simple text search
     """
@@ -92,9 +135,14 @@ def _retrieve_rules_mock(query: str, doc_id: str, k: int = 5, vectordb_dir: str 
             if doc_id and index_data.get("doc_id") != doc_id:
                 continue
             
-            # Simple text search with relevance scoring
+            # Simple text search with relevance scoring and metadata filtering
             query_lower = query.lower()
             for i, (doc, meta) in enumerate(zip(index_data["documents"], index_data["metadatas"])):
+                # Filter for policy-relevant chunks only
+                chunk_type = meta.get("type", "text")
+                if chunk_type not in ["text", "table"]:
+                    continue
+                    
                 if query_lower in doc.lower():
                     # Simple relevance scoring based on query word frequency
                     relevance = doc.lower().count(query_lower) / len(doc.split())
@@ -113,7 +161,45 @@ def _retrieve_rules_mock(query: str, doc_id: str, k: int = 5, vectordb_dir: str 
             x["meta"].get("char_len", 1)  # Then shorter chunks
         ))
         
-        return all_items[:k]
+        results = all_items[:k]
+        
+        # Log retrieval results if trace_id is provided
+        if trace_id:
+            try:
+                trace_handler = TraceHandler()
+                # Convert results to format expected by log_retrieval
+                log_chunks = []
+                for item in results:
+                    log_chunk = {
+                        "text": item["text"],
+                        "meta": item["meta"],
+                        "page": item["meta"].get("page"),
+                        "type": item["meta"].get("type", "text"),
+                        "relevance_score": 1 - item["distance"],  # Convert distance to relevance score
+                        "chunk_id": item["meta"].get("chunk_id"),
+                        "source": item["meta"].get("source"),
+                        "has_negations": item["meta"].get("has_negation", False),
+                        "length": item["meta"].get("char_len", len(item["text"]))
+                    }
+                    log_chunks.append(log_chunk)
+                
+                # Log asynchronously (fire and forget)
+                import asyncio
+                try:
+                    asyncio.create_task(trace_handler.log_retrieval(trace_id, log_chunks))
+                except RuntimeError:
+                    # If no event loop is running, use synchronous logging
+                    trace_handler.save_trace(trace_id, {
+                        "retrieval_log": {
+                            "query": query,
+                            "retrieved_chunks": log_chunks,
+                            "total_chunks": len(log_chunks)
+                        }
+                    })
+            except Exception as e:
+                print(f"Warning: Failed to log retrieval results: {e}")
+        
+        return results
         
     except Exception as e:
         print(f"Error in _retrieve_rules_mock: {e}")

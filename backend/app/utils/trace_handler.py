@@ -114,6 +114,68 @@ class TraceHandler:
         
         return rag_path
     
+    async def log_retrieval(self, trace_id: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
+        """Log retrieval results with chunk scoring and metadata"""
+        trace_dir = self.get_trace_dir(trace_id)
+        retrieval_path = os.path.join(trace_dir, "60_retrieval_log.json")
+        
+        # Extract relevant information for logging
+        log_data = {
+            "timestamp": datetime.now().isoformat(),
+            "retrieved_chunks": [
+                {
+                    "page": chunk.get("page"),
+                    "score": chunk.get("relevance_score", chunk.get("distance", 0)),
+                    "type": chunk.get("type", chunk.get("meta", {}).get("type", "unknown")),
+                    "chunk_id": chunk.get("chunk_id", chunk.get("id")),
+                    "source": chunk.get("source", chunk.get("meta", {}).get("source", "unknown")),
+                    "has_negations": chunk.get("has_negations", chunk.get("meta", {}).get("has_negation", False)),
+                    "length": chunk.get("length", len(chunk.get("text", ""))),
+                    "text_preview": chunk.get("text", "")[:200] + "..." if len(chunk.get("text", "")) > 200 else chunk.get("text", "")
+                }
+                for chunk in retrieved_chunks
+            ],
+            "total_chunks": len(retrieved_chunks),
+            "chunk_types": {
+                "text": len([c for c in retrieved_chunks if c.get("type", c.get("meta", {}).get("type", "")) == "text"]),
+                "table": len([c for c in retrieved_chunks if c.get("type", c.get("meta", {}).get("type", "")) == "table"])
+            }
+        }
+        
+        async with aiofiles.open(retrieval_path, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(log_data, indent=2, ensure_ascii=False))
+        
+        return retrieval_path
+    
+    def save_trace(self, trace_id: str, log_data: Dict[str, Any]) -> str:
+        """Save general trace data (synchronous version for compatibility)"""
+        trace_dir = self.get_trace_dir(trace_id)
+        os.makedirs(trace_dir, exist_ok=True)
+        
+        # Add timestamp if not present
+        if "timestamp" not in log_data:
+            log_data["timestamp"] = datetime.now().isoformat()
+        
+        # Save to general trace log
+        trace_log_path = os.path.join(trace_dir, "99_trace_log.json")
+        
+        # Load existing log data if it exists
+        existing_data = {}
+        if os.path.exists(trace_log_path):
+            try:
+                with open(trace_log_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_data = {}
+        
+        # Merge new data with existing
+        existing_data.update(log_data)
+        
+        with open(trace_log_path, 'w', encoding='utf-8') as f:
+            json.dump(existing_data, f, indent=2, ensure_ascii=False)
+        
+        return trace_log_path
+    
     def get_trace_summary(self, trace_id: str) -> Dict[str, Any]:
         """Get summary of trace files"""
         trace_dir = self.get_trace_dir(trace_id)

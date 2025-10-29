@@ -31,6 +31,14 @@ try:
 except ImportError:
     NLTK_AVAILABLE = False
 
+# Try to import LangChain for improved chunking
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    print("Warning: LangChain not available. Using fallback text chunking.")
+
 # Try to import optional dependencies
 try:
     import fitz  # PyMuPDF
@@ -144,8 +152,8 @@ class FileHandler:
                 # Save tables separately
                 await self.trace_handler.save_tables(trace_id, tables)
             
-            # Create chunks with improved negation-aware chunking
-            chunks = self._create_chunks(clean_text)
+            # Create chunks with improved LangChain-based chunking
+            chunks = self.chunk_text(clean_text)
             await self.trace_handler.save_chunks(trace_id, chunks)
             
             # Save chunks in JSONL format for verification
@@ -455,6 +463,41 @@ class FileHandler:
         text = re.sub(r'\n\s*\n', '\n\n', text)
         
         return text.strip()
+    
+    def chunk_text(self, text: str) -> List[Dict[str, Any]]:
+        """Create text chunks using LangChain's RecursiveCharacterTextSplitter for better granularity"""
+        if not LANGCHAIN_AVAILABLE:
+            # Fallback to existing chunking method
+            return self._create_chunks(text, max_tokens=1000, overlap_tokens=150)
+        
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,        # ~700–1 000 tokens per chunk
+            chunk_overlap=150,      # 15% overlap keeps context
+            separators=["\n\n", "\n", ". ", ";", " "]
+        )
+        chunks = splitter.split_text(text)
+        
+        # Convert to the expected format
+        result = []
+        char_position = 0
+        
+        for i, chunk_text in enumerate(chunks):
+            chunk_length = len(chunk_text)
+            result.append({
+                "chunk_id": i + 1,
+                "start_char": char_position,
+                "end_char": char_position + chunk_length,
+                "text": chunk_text,
+                "length": chunk_length,
+                "token_estimate": chunk_length // 4,
+                "prev_chunk": i if i > 0 else None,
+                "next_chunk": i + 2 if i < len(chunks) - 1 else None,
+                "has_negations": bool(self.NEG_CUES.search(chunk_text)),
+                "type": "text"
+            })
+            char_position += chunk_length
+        
+        return result
     
     def _create_chunks(self, text: str, max_tokens: int = 1200, overlap_tokens: int = 150) -> List[Dict[str, Any]]:
         """Create text chunks with negation-aware chunking that preserves exceptions and legal constructs"""
