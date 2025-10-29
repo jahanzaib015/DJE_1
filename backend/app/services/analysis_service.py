@@ -405,6 +405,156 @@ class AnalysisService:
                         "text": f"Error processing {investment_type}: {str(e)}"
                     }
 
+    def _validate_llm_response(self, llm_response: Dict[str, Any]) -> None:
+        """Validate LLM response before Excel creation"""
+        # Check for errors
+        if "error" in llm_response:
+            raise ValueError(f"LLM failed: {llm_response['error']}")
+        
+        # Check for required keys
+        required_keys = ["sector_rules", "country_rules", "instrument_rules"]
+        for key in required_keys:
+            if key not in llm_response:
+                raise ValueError(f"Missing key in LLM output: {key}")
+        
+        # Validate structure of each required key
+        for key in required_keys:
+            if not isinstance(llm_response[key], list):
+                raise ValueError(f"Invalid structure for {key}: expected list, got {type(llm_response[key])}")
+        
+        # Validate conflicts key (optional but should be list if present)
+        if "conflicts" in llm_response and not isinstance(llm_response["conflicts"], list):
+            raise ValueError(f"Invalid structure for conflicts: expected list, got {type(llm_response['conflicts'])}")
+        
+        # Validate individual rule structures
+        for key in required_keys:
+            for rule in llm_response[key]:
+                if not isinstance(rule, dict):
+                    raise ValueError(f"Invalid rule structure in {key}: expected dict, got {type(rule)}")
+                
+                required_rule_keys = ["sector" if key == "sector_rules" else "country" if key == "country_rules" else "instrument", "allowed", "reason"]
+                for rule_key in required_rule_keys:
+                    if rule_key not in rule:
+                        raise ValueError(f"Missing {rule_key} in rule: {rule}")
+                
+                # Validate allowed field
+                if not isinstance(rule["allowed"], bool):
+                    raise ValueError(f"Invalid 'allowed' value in {key}: expected bool, got {type(rule['allowed'])}")
+                
+                # Validate reason field
+                if not isinstance(rule["reason"], str):
+                    raise ValueError(f"Invalid 'reason' value in {key}: expected string, got {type(rule['reason'])}")
+    
+    def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert LLM response to OCRD format for Excel export"""
+        # Validate first
+        self._validate_llm_response(llm_response)
+        
+        # Create empty OCRD structure
+        data = {"fund_id": "compliance_analysis", "as_of": None, "sections": {}, "notes": []}
+        
+        # OCRD schema
+        OCRD_SCHEMA = {
+            "bond": ["covered_bond", "asset_backed_security", "mortgage_bond", "pfandbrief", "public_mortgage_bond", "convertible_bond_regular", "convertible_bond_coco", "reverse_convertible", "credit_linked_note", "commercial_paper", "genussscheine_bondlike", "inflation_linked", "participation_paper", "plain_vanilla_bond", "promissory_note", "warrant_linked_bond"],
+            "certificate": ["bond_certificate", "commodity_certificate", "currency_certificate", "fund_certificate", "index_certificate", "stock_certificate"],
+            "stock": ["common_stock", "depositary_receipt", "genussschein_stocklike", "partizipationsschein", "preferred_stock", "reit", "right"],
+            "fund": ["alternative_investment_fund", "commodity_fund", "equity_fund", "fixed_income_fund", "mixed_allocation_fund", "moneymarket_fund", "private_equity_fund", "real_estate_fund", "speciality_fund"],
+            "deposit": ["call_money", "cash", "time_deposit"],
+            "future": ["bond_future", "commodity_future", "currency_future", "fund_future", "index_future", "single_stock_future"],
+            "option": ["bond_future_option", "commodity_future_option", "commodity_option", "currency_future_option", "currency_option", "fund_future_option", "fund_option", "index_future_option", "index_option", "stock_option"],
+            "warrant": ["commodity_warrant", "currency_warrant", "fund_warrant", "index_warrant", "stock_warrant"],
+            "commodity": ["precious_metal"],
+            "forex": ["forex_outright", "forex_spot"],
+            "swap": ["credit_default_swap", "interest_swap", "total_return_swap"],
+            "loan": [],
+            "private_equity": [],
+            "real_estate": [],
+            "rights": ["subscription_rights"]
+        }
+        
+        # Initialize sections
+        for section, rows in OCRD_SCHEMA.items():
+            data["sections"][section] = {}
+            for r in rows:
+                data["sections"][section][r] = {"allowed": False, "note": "", "evidence": {"page": None, "text": ""}}
+            if section in ("stock", "fund", "bond", "certificate", "deposit", "future", "option", "warrant", "commodity", "forex", "swap", "loan", "private_equity", "real_estate", "rights"):
+                data["sections"][section]["special_other_restrictions"] = []
+        
+        # Apply sector rules
+        for rule in llm_response.get("sector_rules", []):
+            sector = rule["sector"].lower()
+            allowed = rule["allowed"]
+            reason = rule["reason"]
+            
+            # Map sectors to relevant instrument types
+            sector_mapping = {
+                "energy": ["bond", "stock", "fund"],
+                "healthcare": ["bond", "stock", "fund"],
+                "defense": ["bond", "stock", "fund"],
+                "tobacco": ["bond", "stock", "fund"],
+                "gambling": ["bond", "stock", "fund"],
+                "weapons": ["bond", "stock", "fund"]
+            }
+            
+            affected_sections = sector_mapping.get(sector, ["bond", "stock", "fund"])
+            for section in affected_sections:
+                if section in data["sections"]:
+                    for key in data["sections"][section]:
+                        if key != "special_other_restrictions":
+                            data["sections"][section][key]["allowed"] = allowed
+                            data["sections"][section][key]["note"] = f"Sector rule: {sector} - {reason}"
+                            data["sections"][section][key]["evidence"] = {
+                                "page": 1,
+                                "text": reason
+                            }
+        
+        # Apply country rules
+        for rule in llm_response.get("country_rules", []):
+            country = rule["country"]
+            allowed = rule["allowed"]
+            reason = rule["reason"]
+            
+            # Add to notes
+            data["notes"].append(f"Country rule: {country} - {'Allowed' if allowed else 'Prohibited'} - {reason}")
+        
+        # Apply instrument rules
+        for rule in llm_response.get("instrument_rules", []):
+            instrument = rule["instrument"].lower()
+            allowed = rule["allowed"]
+            reason = rule["reason"]
+            
+            # Map instruments to sections
+            instrument_mapping = {
+                "bonds": "bond",
+                "equities": "stock",
+                "stocks": "stock",
+                "funds": "fund",
+                "derivatives": "future",
+                "options": "option",
+                "futures": "future",
+                "warrants": "warrant",
+                "commodities": "commodity",
+                "forex": "forex",
+                "swaps": "swap"
+            }
+            
+            section = instrument_mapping.get(instrument)
+            if section and section in data["sections"]:
+                for key in data["sections"][section]:
+                    if key != "special_other_restrictions":
+                        data["sections"][section][key]["allowed"] = allowed
+                        data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                        data["sections"][section][key]["evidence"] = {
+                            "page": 1,
+                            "text": reason
+                        }
+        
+        # Add conflicts to notes
+        for conflict in llm_response.get("conflicts", []):
+            data["notes"].append(f"Conflict: {conflict.get('category', 'Unknown')} - {conflict.get('detail', 'No details')}")
+        
+        return data
+
     def _calculate_metrics(self, data: Dict[str, Any]) -> tuple:
         """Calculate analysis metrics"""
         total_instruments = 0
@@ -423,3 +573,47 @@ class AnalysisService:
         evidence_coverage = int((evidence_count / allowed_instruments * 100)) if allowed_instruments > 0 else 0
         
         return total_instruments, allowed_instruments, evidence_coverage
+    
+    async def create_excel_from_llm_response(self, llm_response: Dict[str, Any], filename: str = None) -> str:
+        """Create Excel export from validated LLM response"""
+        try:
+            # Convert LLM response to OCRD format (includes validation)
+            ocrd_data = self._convert_llm_response_to_ocrd_format(llm_response)
+            
+            # Create Excel export
+            excel_path = await self.file_handler.create_excel_export(ocrd_data)
+            
+            return excel_path
+            
+        except Exception as e:
+            raise Exception(f"Failed to create Excel from LLM response: {str(e)}")
+    
+    def validate_and_preview_llm_response(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate LLM response and return preview for debugging"""
+        try:
+            # Validate the response
+            self._validate_llm_response(llm_response)
+            
+            # Return preview
+            preview = {
+                "valid": True,
+                "sector_rules_count": len(llm_response.get("sector_rules", [])),
+                "country_rules_count": len(llm_response.get("country_rules", [])),
+                "instrument_rules_count": len(llm_response.get("instrument_rules", [])),
+                "conflicts_count": len(llm_response.get("conflicts", [])),
+                "preview": {
+                    "sector_rules": llm_response.get("sector_rules", [])[:3],  # First 3 rules
+                    "country_rules": llm_response.get("country_rules", [])[:3],
+                    "instrument_rules": llm_response.get("instrument_rules", [])[:3],
+                    "conflicts": llm_response.get("conflicts", [])[:3]
+                }
+            }
+            
+            return preview
+            
+        except Exception as e:
+            return {
+                "valid": False,
+                "error": str(e),
+                "llm_response": llm_response
+            }

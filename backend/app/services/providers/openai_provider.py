@@ -36,7 +36,7 @@ class OpenAIProvider(LLMProviderInterface):
             except Exception as e:
                 err_msg = str(e).lower()
                 tried_models.append(m)
-                print(f"⚠️ Model '{m}' failed: {e}")
+                print(f"Warning: Model '{m}' failed: {e}")
                 if "404" in err_msg or "does not exist" in err_msg:
                     print(f"Skipping unavailable model '{m}'...")
                     continue
@@ -48,46 +48,40 @@ class OpenAIProvider(LLMProviderInterface):
 
         # If all models fail, return fallback
         return {
-            "bonds": {"allowed": "Uncertain", "evidence": f"All models failed: {tried_models}"},
-            "stocks": {"allowed": "Uncertain", "evidence": f"All models failed: {tried_models}"},
-            "funds": {"allowed": "Uncertain", "evidence": f"All models failed: {tried_models}"},
-            "derivatives": {"allowed": "Uncertain", "evidence": f"All models failed: {tried_models}"}
+            "sector_rules": [],
+            "country_rules": [],
+            "instrument_rules": [],
+            "conflicts": [{"category": "system_error", "detail": f"All models failed: {tried_models}"}]
         }
 
     async def _analyze_with_model(self, text: str, model: str) -> Dict:
         """Core analysis call to OpenAI API"""
-        prompt = f"""
-You are a financial compliance analyst. Analyze the following document
-and determine if each investment category is explicitly allowed or prohibited.
+        prompt = f"""You are analyzing an official investment policy.  
+The goal is to **extract exact factual rules** about where investments are allowed or restricted.  
 
-Respond **ONLY** with valid JSON. Do not include explanations, notes, or commentary.
+Work strictly with the text provided below.
+Do NOT infer or guess. Do NOT include anything that is not explicitly stated.
 
-Document (first 2000 chars shown):
-{text[:2000]}
+Your task:
+1. Identify every rule related to:
+   - Investment sectors (e.g., Energy, Healthcare, Defense, etc.)
+   - Countries or regions (e.g., USA, China, Russia, etc.)
+   - Financial instruments (e.g., equities, bonds, derivatives, cash, crypto, etc.)
+2. For each rule, determine:
+   - Whether it is explicitly **allowed** or **not allowed**
+   - A short **reason or quote** from the policy supporting your conclusion
+3. If conflicting or unclear information appears, record it in a "conflicts" section.
 
-Return JSON in this format exactly:
+Return only structured JSON, matching this schema exactly:
 {{
-  "bonds": {{
-    "allowed": true/false/"Uncertain",
-    "evidence": "exact quoted sentence or 'Uncertain - not found'"
-  }},
-  "stocks": {{
-    "allowed": true/false/"Uncertain",
-    "evidence": "exact quoted sentence or 'Uncertain - not found'"
-  }},
-  "funds": {{
-    "allowed": true/false/"Uncertain",
-    "evidence": "exact quoted sentence or 'Uncertain - not found'"
-  }},
-  "derivatives": {{
-    "allowed": true/false/"Uncertain",
-    "evidence": "exact quoted sentence or 'Uncertain - not found'"
-  }}
+  "sector_rules": [{{"sector": "string", "allowed": true/false, "reason": "string"}}],
+  "country_rules": [{{"country": "string", "allowed": true/false, "reason": "string"}}],
+  "instrument_rules": [{{"instrument": "string", "allowed": true/false, "reason": "string"}}],
+  "conflicts": [{{"category": "string", "detail": "string"}}]
 }}
 
-If you cannot find explicit mentions, mark as "Uncertain".
-If unsure, still return valid JSON — never output plain text.
-"""
+Context (extract directly from this text only):
+{text[:2000]}"""
 
         async with httpx.AsyncClient(timeout=80.0) as client:
             payload = {
@@ -95,7 +89,20 @@ If unsure, still return valid JSON — never output plain text.
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are a precise financial document parser. Always respond in valid JSON only."
+                        "content": """You are a senior compliance analyst specializing in investment restrictions.
+
+CRITICAL INSTRUCTIONS:
+- Extract ONLY explicit rules from the provided text
+- Do NOT summarize, interpret, or infer beyond what is explicitly stated
+- Do NOT mix different rule categories (keep sectors, countries, instruments separate)
+- Do NOT drift into general policy discussion
+- Focus on specific "allowed" vs "not allowed" statements
+- Look for buried restrictions in tables, footnotes, and appendices
+- If text is unclear or contradictory, record it in conflicts section
+
+Your task: Extract exact factual rules about where investments are permitted or prohibited.
+
+Return ONLY valid JSON matching the required schema."""
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -119,45 +126,41 @@ If unsure, still return valid JSON — never output plain text.
 
             data = response.json()
             llm_response = data["choices"][0]["message"]["content"].strip()
-            print(f"🧠 [{model}] Raw LLM response: {llm_response}")
+            print(f"[{model}] Raw LLM response: {llm_response}")
 
             # Handle garbage responses like "bonds"
             if not llm_response.startswith("{") or not llm_response.endswith("}"):
-                print(f"⚠️ Model '{model}' returned invalid JSON — wrapping fallback.")
+                print(f"Warning: Model '{model}' returned invalid JSON — wrapping fallback.")
                 return self._fallback_response(f"Invalid model output: {llm_response}")
 
             try:
                 parsed = json.loads(llm_response)
                 return self._validate_and_normalize_response(parsed)
             except json.JSONDecodeError as e:
-                print(f"⚠️ Model '{model}' JSON parse failed: {e}")
+                print(f"Warning: Model '{model}' JSON parse failed: {e}")
                 return self._fallback_response(f"Parsing error from {model}: {str(e)}")
 
     def _fallback_response(self, reason: str) -> Dict:
         """Return safe fallback JSON"""
         return {
-            "bonds": {"allowed": "Uncertain", "evidence": reason},
-            "stocks": {"allowed": "Uncertain", "evidence": reason},
-            "funds": {"allowed": "Uncertain", "evidence": reason},
-            "derivatives": {"allowed": "Uncertain", "evidence": reason}
+            "sector_rules": [],
+            "country_rules": [],
+            "instrument_rules": [],
+            "conflicts": [{"category": "parsing_error", "detail": reason}]
         }
 
     def _validate_and_normalize_response(self, parsed_json: Dict) -> Dict:
-        """Ensure consistent structure"""
-        expected_keys = ["bonds", "stocks", "funds", "derivatives"]
+        """Ensure consistent structure for compliance analysis"""
+        expected_keys = ["sector_rules", "country_rules", "instrument_rules", "conflicts"]
         normalized = {}
+        
         for key in expected_keys:
-            value = parsed_json.get(key, {})
-            if isinstance(value, dict) and "allowed" in value:
-                normalized[key] = {
-                    "allowed": value.get("allowed", "Uncertain"),
-                    "evidence": value.get("evidence", "No explicit evidence found.")
-                }
+            value = parsed_json.get(key, [])
+            if isinstance(value, list):
+                normalized[key] = value
             else:
-                normalized[key] = {
-                    "allowed": "Uncertain",
-                    "evidence": "Missing or invalid structure."
-                }
+                normalized[key] = []
+        
         return normalized
 
     def get_available_models(self) -> List[str]:
