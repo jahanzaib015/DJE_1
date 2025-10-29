@@ -10,7 +10,8 @@ from pathlib import Path
 class TraceHandler:
     """Handles forensic tracing for document analysis pipeline"""
     
-    def __init__(self, base_traces_dir: str = "traces"):
+    def __init__(self, trace_id: str = None, base_traces_dir: str = "traces"):
+        self.trace_id = trace_id
         self.base_traces_dir = base_traces_dir
         self._ensure_traces_directory()
     
@@ -175,6 +176,102 @@ class TraceHandler:
             json.dump(existing_data, f, indent=2, ensure_ascii=False)
         
         return trace_log_path
+    
+    def log_step(self, step_name: str, data: dict):
+        """Log a processing step with timestamp"""
+        if not self.trace_id:
+            raise ValueError("TraceHandler must be initialized with trace_id to use log_step")
+        
+        # Create step entry
+        step_entry = {"timestamp": datetime.now().isoformat(), "step": step_name, "data": data}
+        
+        # Load existing trace data
+        trace_dir = self.get_trace_dir(self.trace_id)
+        os.makedirs(trace_dir, exist_ok=True)
+        trace_log_path = os.path.join(trace_dir, "99_trace_log.json")
+        
+        existing_data = {}
+        if os.path.exists(trace_log_path):
+            try:
+                with open(trace_log_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_data = {}
+        
+        # Initialize steps array if it doesn't exist
+        if "steps" not in existing_data:
+            existing_data["steps"] = []
+        
+        # Add the new step
+        existing_data["steps"].append(step_entry)
+        
+        # Save updated data
+        with open(trace_log_path, 'w', encoding='utf-8') as f:
+            json.dump(existing_data, f, indent=2, ensure_ascii=False)
+    
+    def log_retrieval(self, retrieved_chunks):
+        """Log retrieval results with simplified interface"""
+        if not self.trace_id:
+            raise ValueError("TraceHandler must be initialized with trace_id to use log_retrieval")
+        
+        # Create retrieval entry
+        retrieval_entry = {"timestamp": datetime.now().isoformat(), "step": "retrieval", "data": retrieved_chunks}
+        
+        # Load existing trace data
+        trace_dir = self.get_trace_dir(self.trace_id)
+        os.makedirs(trace_dir, exist_ok=True)
+        trace_log_path = os.path.join(trace_dir, "99_trace_log.json")
+        
+        existing_data = {}
+        if os.path.exists(trace_log_path):
+            try:
+                with open(trace_log_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_data = {}
+        
+        # Initialize steps array if it doesn't exist
+        if "steps" not in existing_data:
+            existing_data["steps"] = []
+        
+        # Add the retrieval step
+        existing_data["steps"].append(retrieval_entry)
+        
+        # Save updated data
+        with open(trace_log_path, 'w', encoding='utf-8') as f:
+            json.dump(existing_data, f, indent=2, ensure_ascii=False)
+    
+    def log_error(self, error_message: str):
+        """Log an error message"""
+        if not self.trace_id:
+            raise ValueError("TraceHandler must be initialized with trace_id to use log_error")
+        
+        # Create error entry
+        error_entry = {"timestamp": datetime.now().isoformat(), "step": "error", "data": {"message": error_message}}
+        
+        # Load existing trace data
+        trace_dir = self.get_trace_dir(self.trace_id)
+        os.makedirs(trace_dir, exist_ok=True)
+        trace_log_path = os.path.join(trace_dir, "99_trace_log.json")
+        
+        existing_data = {}
+        if os.path.exists(trace_log_path):
+            try:
+                with open(trace_log_path, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_data = {}
+        
+        # Initialize steps array if it doesn't exist
+        if "steps" not in existing_data:
+            existing_data["steps"] = []
+        
+        # Add the error step
+        existing_data["steps"].append(error_entry)
+        
+        # Save updated data
+        with open(trace_log_path, 'w', encoding='utf-8') as f:
+            json.dump(existing_data, f, indent=2, ensure_ascii=False)
     
     def get_trace_summary(self, trace_id: str) -> Dict[str, Any]:
         """Get summary of trace files"""

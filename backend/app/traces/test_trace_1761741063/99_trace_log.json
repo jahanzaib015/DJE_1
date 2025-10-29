@@ -1,0 +1,48 @@
+{
+  "steps": [
+    {
+      "timestamp": "2025-10-29T13:31:03.465978",
+      "step": "text_extracted",
+      "data": {
+        "length": 15422
+      }
+    },
+    {
+      "timestamp": "2025-10-29T13:31:03.467022",
+      "step": "collection_built",
+      "data": {
+        "chunks": 42
+      }
+    },
+    {
+      "timestamp": "2025-10-29T13:31:03.483571",
+      "step": "llm_response",
+      "data": {
+        "length": 1234
+      }
+    },
+    {
+      "timestamp": "2025-10-29T13:31:03.499205",
+      "step": "retrieval",
+      "data": [
+        {
+          "page": 12,
+          "score": 0.89,
+          "type": "text"
+        },
+        {
+          "page": 14,
+          "score": 0.84,
+          "type": "table"
+        }
+      ]
+    },
+    {
+      "timestamp": "2025-10-29T13:31:03.513148",
+      "step": "error",
+      "data": {
+        "message": "Test error message"
+      }
+    }
+  ]
+}

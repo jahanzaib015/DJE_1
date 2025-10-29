@@ -1,0 +1,7 @@
+{
+  "timestamp": "2025-10-29T13:29:10.845117",
+  "step": "error",
+  "data": {
+    "message": "Test error message"
+  }
+}
