@@ -1,6 +1,6 @@
 import time
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from .llm_service import LLMService
 from .rag_retrieve import retrieve_rules
@@ -60,15 +60,23 @@ class AnalysisService:
         
         # ONLY USING OPENAI API - All requests go through OpenAI
         if trace_id:
-            result = await self._analyze_with_llm_traced(data, text, llm_provider, model, trace_id)
+            result, raw_analysis = await self._analyze_with_llm_traced(data, text, llm_provider, model, trace_id)
         else:
-            result = await self._analyze_with_llm(data, text, llm_provider, model, trace_id)
+            result, raw_analysis = await self._analyze_with_llm(data, text, llm_provider, model, trace_id)
         analysis_method_used = f"llm_{llm_provider.value}"
         
         processing_time = time.time() - start_time
         
         # Calculate metrics
         total_instruments, allowed_instruments, evidence_coverage = self._calculate_metrics(result)
+        
+        # Calculate confidence score
+        confidence_score = self._calculate_confidence_score(
+            result, 
+            evidence_coverage, 
+            model,
+            raw_analysis
+        )
         
         return {
             "fund_id": fund_id,
@@ -78,6 +86,7 @@ class AnalysisService:
             "total_instruments": total_instruments,
             "allowed_instruments": allowed_instruments,
             "evidence_coverage": evidence_coverage,
+            "confidence_score": confidence_score,
             "sections": result["sections"],
             "processing_time": round(processing_time, 2),
             "created_at": datetime.now().isoformat()
@@ -215,8 +224,8 @@ class AnalysisService:
         
         return data
     
-    async def _analyze_with_llm(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
-        """LLM-based analysis"""
+    async def _analyze_with_llm(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """LLM-based analysis - returns (structured_data, raw_analysis)"""
         try:
             # Get LLM analysis
             analysis = await self.llm_service.analyze_document(text, llm_provider.value, model, trace_id)
@@ -289,7 +298,7 @@ class AnalysisService:
                             "text": f"Error processing derivatives: {str(e)}"
                         }
             
-            return data
+            return data, analysis
             
         except Exception as e:
             print(f"LLM analysis error: {e}")
@@ -304,10 +313,10 @@ class AnalysisService:
                                 "page": 1,
                                 "text": f"Analysis failed: {str(e)}"
                             }
-            return data
+            return data, {}
     
-    async def _analyze_with_llm_traced(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: str) -> Dict[str, Any]:
-        """LLM-based analysis with forensic tracing"""
+    async def _analyze_with_llm_traced(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """LLM-based analysis with forensic tracing - returns (structured_data, raw_analysis)"""
         try:
             # Get LLM analysis with tracing
             analysis = await self.llm_service.analyze_document_with_tracing(text, llm_provider.value, model, trace_id)
@@ -356,7 +365,7 @@ class AnalysisService:
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
             
-            return data
+            return data, analysis
             
         except Exception as e:
             raise Exception(f"LLM analysis failed: {str(e)}")
@@ -577,6 +586,80 @@ class AnalysisService:
         evidence_coverage = int((evidence_count / allowed_instruments * 100)) if allowed_instruments > 0 else 0
         
         return total_instruments, allowed_instruments, evidence_coverage
+    
+    def _calculate_confidence_score(self, data: Dict[str, Any], evidence_coverage: int, model: str, raw_analysis: Dict[str, Any]) -> int:
+        """
+        Calculate confidence score (0-100) based on:
+        - Evidence quality and coverage
+        - Model type (gpt-5 has higher base confidence)
+        - Number of conflicts found
+        - Evidence text quality (length, specificity)
+        """
+        base_score = 50  # Start with 50%
+        
+        # Model confidence boost
+        model_confidence_boost = {
+            "gpt-5": 20,
+            "gpt-4o": 15,
+            "gpt-4": 10,
+            "gpt-4o-mini": 5,
+            "gpt-3.5-turbo": 0
+        }
+        base_score += model_confidence_boost.get(model.lower(), 5)
+        
+        # Evidence coverage (0-25 points)
+        evidence_score = (evidence_coverage / 100) * 25
+        base_score += evidence_score
+        
+        # Evidence quality (0-15 points)
+        evidence_quality_score = 0
+        evidence_length_sum = 0
+        evidence_count = 0
+        
+        for section, items in data.get("sections", {}).items():
+            for key, value in items.items():
+                if isinstance(value, dict) and value.get("allowed"):
+                    evidence_text = value.get("evidence", {}).get("text", "")
+                    if evidence_text:
+                        evidence_length_sum += len(evidence_text)
+                        evidence_count += 1
+        
+        if evidence_count > 0:
+            avg_evidence_length = evidence_length_sum / evidence_count
+            # Longer evidence texts (more specific) = higher confidence
+            # 50 chars = 5 points, 100 chars = 10 points, 200+ chars = 15 points
+            if avg_evidence_length >= 200:
+                evidence_quality_score = 15
+            elif avg_evidence_length >= 100:
+                evidence_quality_score = 10
+            elif avg_evidence_length >= 50:
+                evidence_quality_score = 5
+        
+        base_score += evidence_quality_score
+        
+        # Conflicts penalty (0-10 points deduction)
+        conflicts = raw_analysis.get("conflicts", [])
+        conflicts_penalty = min(len(conflicts) * 2, 10)  # Max 10 point deduction
+        base_score -= conflicts_penalty
+        
+        # Total rules found (0-10 points)
+        # More rules extracted = better understanding
+        sector_rules = len(raw_analysis.get("sector_rules", []))
+        country_rules = len(raw_analysis.get("country_rules", []))
+        instrument_rules = len(raw_analysis.get("instrument_rules", []))
+        total_rules = sector_rules + country_rules + instrument_rules
+        
+        if total_rules >= 10:
+            base_score += 10
+        elif total_rules >= 5:
+            base_score += 5
+        elif total_rules >= 2:
+            base_score += 2
+        
+        # Ensure score is between 0 and 100
+        confidence_score = max(0, min(100, int(base_score)))
+        
+        return confidence_score
     
     async def create_excel_from_llm_response(self, llm_response: Dict[str, Any], filename: str = None) -> str:
         """Create Excel export from validated LLM response"""

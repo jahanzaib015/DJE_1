@@ -156,14 +156,14 @@ async def get_available_models():
     if llm_service is None:
         return {
             "ollama_models": [],
-            "openai_models": ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
-            "default_model": "gpt-4",
+            "openai_models": ["gpt-5", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo"],
+            "default_model": "gpt-5",
             "warning": "LLM service not initialized"
         }
     return {
         "ollama_models": llm_service.get_ollama_models() if llm_service else [],
-        "openai_models": ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
-        "default_model": "gpt-4"
+        "openai_models": ["gpt-5", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo"],
+        "default_model": "gpt-5"
     }
 
 @app.post("/api/upload")

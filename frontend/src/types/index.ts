@@ -19,6 +19,7 @@ export interface AnalysisResult {
   total_instruments: number;
   allowed_instruments: number;
   evidence_coverage: number;
+  confidence_score: number;
   processing_time: number;
   trace_id?: string;
 }

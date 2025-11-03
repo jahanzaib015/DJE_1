@@ -16,7 +16,7 @@ class AnalysisRequest(BaseModel):
     file_path: str
     analysis_method: AnalysisMethod = AnalysisMethod.LLM_WITH_FALLBACK
     llm_provider: LLMProvider = LLMProvider.OPENAI
-    model: str = "gpt-4"
+    model: str = "gpt-5"
     fund_id: str = "5800"
 
 class JobStatus(BaseModel):
@@ -36,6 +36,7 @@ class AnalysisResult(BaseModel):
     total_instruments: int
     allowed_instruments: int
     evidence_coverage: int
+    confidence_score: int
     sections: Dict[str, Any]
     processing_time: float
     created_at: str

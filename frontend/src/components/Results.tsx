@@ -50,6 +50,31 @@ export const Results: React.FC<ResultsProps> = ({ results, onExportExcel, onExpo
         </div>
       </div>
 
+      {/* Confidence Score Banner */}
+      <div className="mb-6 p-6 bg-gradient-to-r from-yellow-400 via-orange-400 to-pink-400 rounded-xl shadow-lg border-4 border-yellow-300">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <span className="text-5xl">🤖</span>
+            <div>
+              <div className="text-lg font-semibold text-gray-800 mb-1">
+                Model Confidence Score
+              </div>
+              <div className="text-sm text-gray-700">
+                I am <span className="font-bold text-2xl text-gray-900">{results.confidence_score || 0}%</span> confident that the results generated are correct.
+              </div>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-3xl font-bold text-white drop-shadow-lg">
+              {results.confidence_score || 0}%
+            </div>
+            <div className="text-xs text-gray-800 font-semibold mt-1">
+              Confidence Level
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-gray-50 p-4 rounded-lg">
