@@ -631,14 +631,23 @@ class AnalysisService:
             if section and section in data["sections"]:
                 # Try to match specific instrument names within the section
                 instrument_found = False
+                
+                # Check if instrument name is generic (just "bond", "stock", "fund" without specificity)
+                is_generic = instrument_normalized in ["bond", "bonds", "stock", "stocks", "equity", "equities", 
+                                                       "fund", "funds", "derivative", "derivatives", "option", "options",
+                                                       "future", "futures", "warrant", "warrants", "swap", "swaps",
+                                                       "commodity", "commodities", "forex", "currency"]
+                
                 for key in data["sections"][section]:
                     if key != "special_other_restrictions":
                         # Check if this specific instrument name matches
                         key_normalized = key.replace("_", " ").replace("-", " ")
-                        if (instrument_normalized in key_normalized or 
-                            key_normalized in instrument_normalized or
-                            key == instrument or
-                            instrument == key):
+                        
+                        # More precise matching: check if instrument name is contained in key name or vice versa
+                        # But be careful with generic terms - only match if very similar
+                        if (instrument_normalized == key_normalized or  # Exact match
+                            (instrument_normalized in key_normalized and not is_generic) or  # Specific term in key
+                            (key_normalized in instrument_normalized and not is_generic)):  # Key in specific term
                             # Found specific match - only update this one
                             data["sections"][section][key]["allowed"] = allowed
                             data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
@@ -647,18 +656,20 @@ class AnalysisService:
                                 "text": reason
                             }
                             instrument_found = True
-                            break
+                            print(f"[DEBUG] Matched instrument '{instrument}' to specific instrument '{key}' in section '{section}'")
                 
-                # If no specific instrument match found, apply to all in the section
+                # CRITICAL FIX: Don't apply generic rules to all instruments in a section
+                # Only apply if we found a specific match
+                # If the document says "bonds are allowed" without specifying which type, 
+                # we should NOT mark all bond types as allowed - that's too broad
                 if not instrument_found:
-                    for key in data["sections"][section]:
-                        if key != "special_other_restrictions":
-                            data["sections"][section][key]["allowed"] = allowed
-                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
-                            data["sections"][section][key]["evidence"] = {
-                                "page": 1,
-                                "text": reason
-                            }
+                    print(f"[DEBUG] No specific match found for instrument '{instrument}' in section '{section}'. "
+                          f"This is a generic term - NOT applying to all instruments in section to avoid false positives.")
+                    # Optionally, we could add it to notes instead
+                    data["notes"].append(
+                        f"Generic instrument rule found: {instrument} = {'Allowed' if allowed else 'Not Allowed'}, "
+                        f"but could not match to specific instrument type. Reason: {reason}"
+                    )
         
         # Add conflicts to notes
         for conflict in llm_response.get("conflicts", []):
