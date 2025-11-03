@@ -13,7 +13,11 @@ class AnalysisService:
     """Core analysis service that orchestrates document analysis"""
     
     def __init__(self):
-        self.llm_service = LLMService()
+        try:
+            self.llm_service = LLMService()
+        except Exception as e:
+            print(f"Warning: Failed to initialize LLMService in AnalysisService: {e}")
+            self.llm_service = None
         self.trace_handler = TraceHandler()
         self.file_handler = FileHandler()
     

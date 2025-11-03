@@ -57,16 +57,32 @@ class LLMService:
     """Service for managing different LLM providers with fallback and validation"""
     
     def __init__(self):
-        # Disable proxy settings to prevent the "proxies" argument error
-        openai.proxy = None
-        
-        # Get API key with proper validation
+        # Get API key - make it optional for graceful degradation
         api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY not set in environment variables.")
         
-        # Initialize AsyncOpenAI client
-        self.client = AsyncOpenAI(api_key=api_key)
+        # Initialize client only if API key is available
+        self.client = None
+        if api_key:
+            try:
+                # Create a custom httpx client without proxies to avoid compatibility issues
+                # This prevents the "unexpected keyword argument 'proxies'" error
+                http_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(60.0),
+                    # Explicitly don't pass proxies parameter
+                )
+                
+                # Initialize AsyncOpenAI client with custom http_client
+                self.client = AsyncOpenAI(
+                    api_key=api_key,
+                    http_client=http_client
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize OpenAI client: {str(e)}")
+                print("Warning: OpenAI API key not found. Embedding generation will be disabled.")
+                self.client = None
+        else:
+            print("Warning: OpenAI API key not found. Embedding generation will be disabled.")
+        
         self.providers = {
             "openai": OpenAIProvider()
         }
@@ -80,6 +96,9 @@ class LLMService:
     
     async def analyze_text(self, prompt_text: str) -> dict:
         """Analyze text using the new OpenAI client with robust system prompt"""
+        if not self.client:
+            return {"error": "OpenAI client not initialized. Please set OPENAI_API_KEY environment variable."}
+        
         try:
             response = await self.client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -101,6 +120,9 @@ class LLMService:
     
     async def analyze_document(self, text: str, provider: str, model: str, trace_id: Optional[str] = None) -> Dict:
         """Analyze document using new OpenAI client with robust system prompt"""
+        if not self.client:
+            raise ValueError("OpenAI client not initialized. Please set OPENAI_API_KEY environment variable.")
+        
         # Create dynamic user prompt
         user_prompt = f"""You are analyzing an official investment policy.  
 The goal is to **extract exact factual rules** about where investments are allowed or restricted.  

@@ -35,9 +35,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize services
-analysis_service = AnalysisService()
-llm_service = LLMService()
+# Initialize services with error handling
+try:
+    analysis_service = AnalysisService()
+except Exception as e:
+    print(f"Warning: Failed to initialize AnalysisService: {e}")
+    analysis_service = None
+
+try:
+    llm_service = LLMService()
+except Exception as e:
+    print(f"Warning: Failed to initialize LLMService: {e}")
+    llm_service = None
+
 file_handler = FileHandler()
 trace_handler = TraceHandler()
 
@@ -143,8 +153,15 @@ async def health_check_api():
 @app.get("/api/models")
 async def get_available_models():
     """Get available LLM models"""
+    if llm_service is None:
+        return {
+            "ollama_models": [],
+            "openai_models": ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
+            "default_model": "gpt-4",
+            "warning": "LLM service not initialized"
+        }
     return {
-        "ollama_models": llm_service.get_ollama_models(),
+        "ollama_models": llm_service.get_ollama_models() if llm_service else [],
         "openai_models": ["gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"],
         "default_model": "gpt-4"
     }
