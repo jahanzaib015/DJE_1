@@ -67,23 +67,27 @@ class OpenAIProvider(LLMProviderInterface):
             print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for analysis")
         
         prompt = f"""You are analyzing an official investment policy document.  
-The goal is to **extract exact factual rules** about where investments are allowed or restricted.  
+The goal is to **extract factual rules** about where investments are allowed or restricted.  
 
 **CRITICAL: You must carefully search through the ENTIRE document text provided below. Rules can appear anywhere - in the beginning, middle, end, in tables, footnotes, appendices, or any section.**
 
-Work strictly with the text provided below.
-Do NOT infer or guess. Do NOT include anything that is not explicitly stated.
+**How to identify rules:**
+- Look for statements about what investments are **permitted**, **allowed**, **authorized**, **approved**, or **may be invested in**
+- Look for statements about what investments are **prohibited**, **forbidden**, **not allowed**, **restricted**, **excluded**, or **may not be invested in**
+- Rules are often stated using phrases like: "investments are permitted in...", "the fund may invest in...", "investments in X are not allowed", "prohibited from investing in...", "subject to restrictions on..."
+- Extract rules based on what the document CLEARLY states, even if it doesn't use the exact words "allowed" or "not allowed"
 
 Your task:
 1. Systematically identify EVERY rule related to:
-   - Investment sectors (e.g., Energy, Healthcare, Defense, Technology, etc.)
+   - Investment sectors (e.g., Energy, Healthcare, Defense, Technology, Tobacco, Weapons, etc.)
    - Countries or regions (e.g., USA, China, Russia, Europe, etc.)
-   - Financial instruments (e.g., equities, stocks, bonds, derivatives, cash, crypto, commodities, etc.)
+   - Financial instruments (e.g., equities, stocks, bonds, derivatives, cash, crypto, commodities, certificates, futures, options, warrants, swaps, etc.)
 2. For each rule you find, determine:
-   - Whether it is explicitly **allowed** or **not allowed**
+   - Whether it indicates investments are **allowed** (permitted/authorized) or **not allowed** (prohibited/restricted)
    - A short **reason or quote** from the policy text supporting your conclusion
 3. Search through ALL sections of the document - rules may be stated in multiple places.
-4. If conflicting or unclear information appears, record it in a "conflicts" section.
+4. Extract rules even if they're stated indirectly (e.g., "investments in tobacco companies are prohibited" means "tobacco sector: not allowed")
+5. If conflicting or unclear information appears, record it in a "conflicts" section.
 
 Return only structured JSON, matching this schema exactly:
 {{
@@ -105,16 +109,16 @@ Return only structured JSON, matching this schema exactly:
                         "content": """You are a senior compliance analyst specializing in investment restrictions.
 
 CRITICAL INSTRUCTIONS:
-- Extract ONLY explicit rules from the provided text
-- Do NOT summarize, interpret, or infer beyond what is explicitly stated
+- Extract rules that are CLEARLY stated in the document (don't invent rules that aren't there)
+- Recognize common policy language: "permitted", "allowed", "authorized", "may invest" = allowed; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = not allowed
+- Extract rules even if they're stated indirectly (e.g., "prohibited from investing in tobacco" = tobacco sector not allowed)
 - Do NOT mix different rule categories (keep sectors, countries, instruments separate)
 - Do NOT drift into general policy discussion
-- Focus on specific "allowed" vs "not allowed" statements
 - Look for buried restrictions in tables, footnotes, and appendices - search the ENTIRE document
 - Carefully examine every section of the document - rules can appear anywhere
 - If text is unclear or contradictory, record it in conflicts section
 
-Your task: Extract exact factual rules about where investments are permitted or prohibited. Search through the entire document systematically.
+Your task: Extract factual rules about where investments are permitted or prohibited based on what the document clearly states. Search through the entire document systematically and extract ALL rules you can identify.
 
 Return ONLY valid JSON matching the required schema."""
                     },
