@@ -461,17 +461,40 @@ class AnalysisService:
     def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
         """Convert LLM response to OCRD format for Excel export"""
         # Debug: Print LLM response to help diagnose issues
-        print(f"[DEBUG] LLM Response: sector_rules={len(llm_response.get('sector_rules', []))}, "
-              f"country_rules={len(llm_response.get('country_rules', []))}, "
-              f"instrument_rules={len(llm_response.get('instrument_rules', []))}")
+        sector_count = len(llm_response.get('sector_rules', []))
+        country_count = len(llm_response.get('country_rules', []))
+        instrument_count = len(llm_response.get('instrument_rules', []))
+        
+        print(f"[DEBUG] LLM Response: sector_rules={sector_count}, "
+              f"country_rules={country_count}, "
+              f"instrument_rules={instrument_count}")
+        
         if llm_response.get("instrument_rules"):
-            print(f"[DEBUG] First instrument rule: {llm_response['instrument_rules'][0]}")
+            print(f"[DEBUG] First 3 instrument rules:")
+            for i, rule in enumerate(llm_response['instrument_rules'][:3]):
+                print(f"  [{i+1}] {rule}")
+        else:
+            print(f"[DEBUG] WARNING: instrument_rules is EMPTY!")
         
         # Validate first
         self._validate_llm_response(llm_response)
         
         # Create empty OCRD structure
         data = {"fund_id": "compliance_analysis", "as_of": None, "sections": {}, "notes": []}
+        
+        # Add debug info to notes so it's visible in results
+        debug_info = f"[DEBUG] LLM returned: {sector_count} sector rules, {country_count} country rules, {instrument_count} instrument rules"
+        data["notes"].append(debug_info)
+        print(debug_info)
+        
+        # Log actual instrument rules if any
+        if instrument_count > 0:
+            print(f"[DEBUG] Instrument rules details:")
+            for i, rule in enumerate(llm_response.get("instrument_rules", [])[:5]):
+                print(f"  [{i+1}] instrument='{rule.get('instrument', 'N/A')}', allowed={rule.get('allowed', 'N/A')}, reason='{rule.get('reason', 'N/A')[:100]}...'")
+                data["notes"].append(
+                    f"[DEBUG] Rule {i+1}: '{rule.get('instrument', 'N/A')}' = {rule.get('allowed', 'N/A')}"
+                )
         
         # OCRD schema
         OCRD_SCHEMA = {
@@ -690,7 +713,9 @@ class AnalysisService:
                                 "text": reason
                             }
                             instrument_found = True
-                            print(f"[DEBUG] Matched instrument '{instrument}' to specific instrument '{key}' in section '{section}'")
+                            match_msg = f"[DEBUG] ✓ Matched '{instrument}' → '{key}' in '{section}'"
+                            print(match_msg)
+                            data["notes"].append(match_msg)  # Add to notes for visibility
                             break  # Stop after first match to avoid duplicate matches
                 
                 # CRITICAL: For generic terms, don't apply to all, but log for review
@@ -711,6 +736,16 @@ class AnalysisService:
         # Add conflicts to notes
         for conflict in llm_response.get("conflicts", []):
             data["notes"].append(f"Conflict: {conflict.get('category', 'Unknown')} - {conflict.get('detail', 'No details')}")
+        
+        # Final debug: Count how many instruments were actually set to allowed
+        final_allowed_count = sum(
+            1 for section in data["sections"].values()
+            for key, value in section.items()
+            if isinstance(value, dict) and value.get("allowed") is True
+        )
+        final_debug = f"[DEBUG] After processing: {final_allowed_count} instruments set to allowed=True"
+        data["notes"].append(final_debug)
+        print(final_debug)
         
         return data
 

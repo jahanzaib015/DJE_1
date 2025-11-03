@@ -302,6 +302,15 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         jobs[job_id].progress = 100
         jobs[job_id].message = "Analysis completed successfully"
         jobs[job_id].result = result
+        
+        # Log result summary for debugging
+        allowed_count = result.get("allowed_instruments", 0)
+        total_count = result.get("total_instruments", 0)
+        notes_count = len(result.get("notes", []))
+        print(f"[JOB {job_id}] Analysis complete: {allowed_count}/{total_count} allowed, {notes_count} notes")
+        if notes_count > 0:
+            print(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
+        
         save_jobs()  # Save completion
         
         # Add trace_id to result if available
