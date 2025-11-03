@@ -638,16 +638,50 @@ class AnalysisService:
                                                        "future", "futures", "warrant", "warrants", "swap", "swaps",
                                                        "commodity", "commodities", "forex", "currency"]
                 
+                # Normalize instrument to word list for flexible matching
+                instrument_words = set(instrument_normalized.split())
+                
                 for key in data["sections"][section]:
                     if key != "special_other_restrictions":
-                        # Check if this specific instrument name matches
+                        # Normalize key name
                         key_normalized = key.replace("_", " ").replace("-", " ")
+                        key_words = set(key_normalized.split())
                         
-                        # More precise matching: check if instrument name is contained in key name or vice versa
-                        # But be careful with generic terms - only match if very similar
-                        if (instrument_normalized == key_normalized or  # Exact match
-                            (instrument_normalized in key_normalized and not is_generic) or  # Specific term in key
-                            (key_normalized in instrument_normalized and not is_generic)):  # Key in specific term
+                        # Smart matching function that handles variations
+                        def matches_flexibly(instrument_str: str, instrument_word_set: set, key_str: str, key_word_set: set) -> bool:
+                            """Check if instrument matches key with flexible word matching"""
+                            # Exact match
+                            if instrument_str == key_str:
+                                return True
+                            
+                            # One contains the other (handles "commodity certificate" -> "commodity_certificate")
+                            if instrument_str in key_str or key_str in instrument_str:
+                                return True
+                            
+                            # Word-based matching: check if all significant words from instrument are in key
+                            # Significant words are those with 3+ characters (skip "the", "a", "an", etc.)
+                            significant_instrument_words = {w for w in instrument_word_set if len(w) >= 3}
+                            significant_key_words = {w for w in key_word_set if len(w) >= 3}
+                            
+                            # If all significant instrument words are in key words, it's a match
+                            # E.g., "commodity certificate" -> ["commodity", "certificate"] both in "commodity_certificate"
+                            if significant_instrument_words and significant_instrument_words.issubset(significant_key_words):
+                                return True
+                            
+                            # Reverse: if all significant key words are in instrument words
+                            if significant_key_words and significant_key_words.issubset(significant_instrument_words):
+                                return True
+                            
+                            # Partial overlap: if at least 2 significant words match (handles subcategories)
+                            # E.g., "certificate" should match "commodity_certificate" if certificate is the main word
+                            overlap = significant_instrument_words & significant_key_words
+                            if len(overlap) >= min(2, len(significant_instrument_words), len(significant_key_words)):
+                                return True
+                            
+                            return False
+                        
+                        # Check if instrument matches this key
+                        if matches_flexibly(instrument_normalized, instrument_words, key_normalized, key_words):
                             # Found specific match - only update this one
                             data["sections"][section][key]["allowed"] = allowed
                             data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
@@ -657,18 +691,21 @@ class AnalysisService:
                             }
                             instrument_found = True
                             print(f"[DEBUG] Matched instrument '{instrument}' to specific instrument '{key}' in section '{section}'")
+                            break  # Stop after first match to avoid duplicate matches
                 
-                # CRITICAL FIX: Don't apply generic rules to all instruments in a section
-                # Only apply if we found a specific match
-                # If the document says "bonds are allowed" without specifying which type, 
-                # we should NOT mark all bond types as allowed - that's too broad
-                if not instrument_found:
-                    print(f"[DEBUG] No specific match found for instrument '{instrument}' in section '{section}'. "
-                          f"This is a generic term - NOT applying to all instruments in section to avoid false positives.")
-                    # Optionally, we could add it to notes instead
+                # CRITICAL: For generic terms, don't apply to all, but log for review
+                if not instrument_found and is_generic:
+                    print(f"[DEBUG] Generic instrument term '{instrument}' found but no specific match. Not applying broadly.")
                     data["notes"].append(
                         f"Generic instrument rule found: {instrument} = {'Allowed' if allowed else 'Not Allowed'}, "
                         f"but could not match to specific instrument type. Reason: {reason}"
+                    )
+                elif not instrument_found:
+                    # Non-generic term but no match - might be a variation we didn't catch
+                    print(f"[DEBUG] Warning: Could not match instrument '{instrument}' to any specific instrument in section '{section}'")
+                    data["notes"].append(
+                        f"Unmatched instrument rule: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. "
+                        f"Reason: {reason}. Could not match to specific OCRD instrument type."
                     )
         
         # Add conflicts to notes
