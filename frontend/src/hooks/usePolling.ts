@@ -4,6 +4,12 @@ import { JobStatus } from '../types';
 
 export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) => void) => {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const onUpdateRef = useRef(onUpdate);
+
+  // Keep onUpdate ref current without causing re-renders
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -14,7 +20,8 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
     const fetchStatus = async () => {
       try {
         const status = await AnalysisService.getJobStatus(jobId);
-        onUpdate(status);
+        // Use ref to avoid dependency issues
+        onUpdateRef.current(status);
       } catch (error: any) {
         console.error('Polling error:', error);
         console.error('Error details:', {
@@ -42,6 +49,6 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [jobId, onUpdate]);
+  }, [jobId]); // Removed onUpdate from dependencies to prevent infinite loop
 };
 

@@ -16,7 +16,7 @@ class AnalysisRequest(BaseModel):
     file_path: str
     analysis_method: AnalysisMethod = AnalysisMethod.LLM_WITH_FALLBACK
     llm_provider: LLMProvider = LLMProvider.OPENAI
-    model: str = "gpt-4o"
+    model: str = "gpt-5"
     fund_id: str = "5800"
 
 class JobStatus(BaseModel):

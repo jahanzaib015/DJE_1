@@ -21,8 +21,7 @@ class OpenAIProvider(LLMProviderInterface):
 
         self.base_url = "https://api.openai.com/v1"
         # Preferred model order (highest quality first)
-        # Note: gpt-5 doesn't exist yet, using gpt-4o as highest quality
-        self.model_priority = ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+        self.model_priority = ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
 
     async def analyze_document(self, text: str, model: str) -> Dict:
         """Analyze document using OpenAI ChatGPT with automatic fallback chain"""
