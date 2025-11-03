@@ -33,14 +33,25 @@ class OllamaProvider(LLMProviderInterface):
 
     async def analyze_document(self, text: str, model: str) -> Dict:
         """Analyze document using Ollama"""
+        # Calculate safe text limit: most Ollama models have context windows of 32k-128k tokens
+        # Use 100k chars as a conservative safe limit
+        max_text_length = 100000
+        
+        # Truncate only if text exceeds safe limit
+        text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
+        if len(text) > max_text_length:
+            print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for Ollama analysis")
+        
         prompt = f"""Analyze this financial document and respond with ONLY a JSON object.
 
-Document: {text[:2000]}
+**CRITICAL: You must carefully search through the ENTIRE document text provided below. Rules can appear anywhere in the document.**
+
+Document: {text_to_analyze}
 
 Respond with this exact JSON format:
 {{"bonds": true/false, "stocks": true/false, "funds": true/false, "derivatives": true/false}}
 
-Only mark as true if the document explicitly allows that type of investment."""
+Only mark as true if the document explicitly allows that type of investment. Search through all sections of the document."""
         
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
