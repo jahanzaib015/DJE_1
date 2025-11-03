@@ -460,6 +460,13 @@ class AnalysisService:
     
     def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
         """Convert LLM response to OCRD format for Excel export"""
+        # Debug: Print LLM response to help diagnose issues
+        print(f"[DEBUG] LLM Response: sector_rules={len(llm_response.get('sector_rules', []))}, "
+              f"country_rules={len(llm_response.get('country_rules', []))}, "
+              f"instrument_rules={len(llm_response.get('instrument_rules', []))}")
+        if llm_response.get("instrument_rules"):
+            print(f"[DEBUG] First instrument rule: {llm_response['instrument_rules'][0]}")
+        
         # Validate first
         self._validate_llm_response(llm_response)
         
@@ -532,35 +539,126 @@ class AnalysisService:
         
         # Apply instrument rules
         for rule in llm_response.get("instrument_rules", []):
-            instrument = rule["instrument"].lower()
+            instrument = rule["instrument"].lower().strip()
             allowed = rule["allowed"]
             reason = rule["reason"]
             
-            # Map instruments to sections
+            # Normalize instrument name (handle underscores, spaces, hyphens)
+            instrument_normalized = instrument.replace("_", " ").replace("-", " ")
+            
+            # Build comprehensive mapping of instruments to sections and specific instrument names
             instrument_mapping = {
+                # Generic terms
                 "bonds": "bond",
+                "bond": "bond",
                 "equities": "stock",
+                "equity": "stock",
                 "stocks": "stock",
+                "stock": "stock",
                 "funds": "fund",
+                "fund": "fund",
                 "derivatives": "future",
                 "options": "option",
+                "option": "option",
                 "futures": "future",
+                "future": "future",
                 "warrants": "warrant",
+                "warrant": "warrant",
                 "commodities": "commodity",
+                "commodity": "commodity",
                 "forex": "forex",
-                "swaps": "swap"
+                "swaps": "swap",
+                "swap": "swap",
+                # Specific bond types
+                "covered bond": "bond",
+                "covered_bond": "bond",
+                "asset backed security": "bond",
+                "asset_backed_security": "bond",
+                "asset-backed security": "bond",
+                "mortgage bond": "bond",
+                "mortgage_bond": "bond",
+                "mortgage-bond": "bond",
+                "pfandbrief": "bond",
+                "convertible bond": "bond",
+                "convertible_bond": "bond",
+                "commercial paper": "bond",
+                "commercial_paper": "bond",
+                # Specific stock types
+                "common stock": "stock",
+                "common_stock": "stock",
+                "preferred stock": "stock",
+                "preferred_stock": "stock",
+                # Specific fund types
+                "equity fund": "fund",
+                "equity_fund": "fund",
+                "fixed income fund": "fund",
+                "fixed_income_fund": "fund",
+                "money market fund": "fund",
+                "moneymarket_fund": "fund",
             }
             
-            section = instrument_mapping.get(instrument)
+            # First try exact match
+            section = instrument_mapping.get(instrument) or instrument_mapping.get(instrument_normalized)
+            
+            # If no exact match, try partial matching
+            if not section:
+                for key, value in instrument_mapping.items():
+                    if key in instrument or instrument in key:
+                        section = value
+                        break
+            
+            # If still no match, try to infer from instrument name
+            if not section:
+                if "bond" in instrument_normalized:
+                    section = "bond"
+                elif "stock" in instrument_normalized or "equity" in instrument_normalized:
+                    section = "stock"
+                elif "fund" in instrument_normalized:
+                    section = "fund"
+                elif "option" in instrument_normalized:
+                    section = "option"
+                elif "future" in instrument_normalized:
+                    section = "future"
+                elif "warrant" in instrument_normalized:
+                    section = "warrant"
+                elif "swap" in instrument_normalized:
+                    section = "swap"
+                elif "commodity" in instrument_normalized:
+                    section = "commodity"
+                elif "forex" in instrument_normalized or "currency" in instrument_normalized:
+                    section = "forex"
+            
             if section and section in data["sections"]:
+                # Try to match specific instrument names within the section
+                instrument_found = False
                 for key in data["sections"][section]:
                     if key != "special_other_restrictions":
-                        data["sections"][section][key]["allowed"] = allowed
-                        data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
-                        data["sections"][section][key]["evidence"] = {
-                            "page": 1,
-                            "text": reason
-                        }
+                        # Check if this specific instrument name matches
+                        key_normalized = key.replace("_", " ").replace("-", " ")
+                        if (instrument_normalized in key_normalized or 
+                            key_normalized in instrument_normalized or
+                            key == instrument or
+                            instrument == key):
+                            # Found specific match - only update this one
+                            data["sections"][section][key]["allowed"] = allowed
+                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["evidence"] = {
+                                "page": 1,
+                                "text": reason
+                            }
+                            instrument_found = True
+                            break
+                
+                # If no specific instrument match found, apply to all in the section
+                if not instrument_found:
+                    for key in data["sections"][section]:
+                        if key != "special_other_restrictions":
+                            data["sections"][section][key]["allowed"] = allowed
+                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["evidence"] = {
+                                "page": 1,
+                                "text": reason
+                            }
         
         # Add conflicts to notes
         for conflict in llm_response.get("conflicts", []):

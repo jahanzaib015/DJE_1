@@ -81,7 +81,7 @@ Your task:
 1. Systematically identify EVERY rule related to:
    - Investment sectors (e.g., Energy, Healthcare, Defense, Technology, Tobacco, Weapons, etc.)
    - Countries or regions (e.g., USA, China, Russia, Europe, etc.)
-   - Financial instruments (e.g., equities, stocks, bonds, derivatives, cash, crypto, commodities, certificates, futures, options, warrants, swaps, etc.)
+   - Financial instruments - use specific instrument names if mentioned (e.g., covered_bond, asset_backed_security, mortgage_bond, convertible_bond, commercial_paper, common_stock, preferred_stock, equity_fund, fixed_income_fund, derivatives, options, futures, warrants, swaps, etc.). If the document mentions generic terms like "bonds" or "stocks", use those terms.
 2. For each rule you find, determine:
    - Whether it indicates investments are **allowed** (permitted/authorized) or **not allowed** (prohibited/restricted)
    - A short **reason or quote** from the policy text supporting your conclusion
