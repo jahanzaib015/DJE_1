@@ -718,19 +718,41 @@ class AnalysisService:
                             data["notes"].append(match_msg)  # Add to notes for visibility
                             break  # Stop after first match to avoid duplicate matches
                 
-                # CRITICAL: For generic terms, don't apply to all, but log for review
+                # CRITICAL: For generic terms, apply to ALL instruments in that section
                 if not instrument_found and is_generic:
-                    print(f"[DEBUG] Generic instrument term '{instrument}' found but no specific match. Not applying broadly.")
+                    print(f"[DEBUG] Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section")
+                    for key in data["sections"][section]:
+                        if key != "special_other_restrictions":
+                            data["sections"][section][key]["allowed"] = allowed
+                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["evidence"] = {
+                                "page": 1,
+                                "text": reason
+                            }
+                    instrument_found = True
                     data["notes"].append(
-                        f"Generic instrument rule found: {instrument} = {'Allowed' if allowed else 'Not Allowed'}, "
-                        f"but could not match to specific instrument type. Reason: {reason}"
+                        f"Generic instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
                     )
-                elif not instrument_found:
-                    # Non-generic term but no match - might be a variation we didn't catch
-                    print(f"[DEBUG] Warning: Could not match instrument '{instrument}' to any specific instrument in section '{section}'")
+                elif not instrument_found and section:
+                    # Non-generic term but no match - apply to first instrument in section as fallback
+                    print(f"[DEBUG] Warning: Could not match instrument '{instrument}' to specific instrument in '{section}', applying to all in section")
+                    for key in data["sections"][section]:
+                        if key != "special_other_restrictions":
+                            data["sections"][section][key]["allowed"] = allowed
+                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["evidence"] = {
+                                "page": 1,
+                                "text": reason
+                            }
                     data["notes"].append(
-                        f"Unmatched instrument rule: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. "
-                        f"Reason: {reason}. Could not match to specific OCRD instrument type."
+                        f"Unmatched instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    )
+                elif not section:
+                    # Couldn't even determine which section this belongs to
+                    print(f"[DEBUG] ERROR: Could not determine section for instrument '{instrument}'")
+                    data["notes"].append(
+                        f"ERROR: Unmatched instrument rule '{instrument}' = {'Allowed' if allowed else 'Not Allowed'}. "
+                        f"Could not determine instrument category. Reason: {reason}"
                     )
         
         # Add conflicts to notes
