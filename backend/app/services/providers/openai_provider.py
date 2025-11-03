@@ -144,7 +144,8 @@ Return ONLY valid JSON matching the required schema."""
 
             data = response.json()
             llm_response = data["choices"][0]["message"]["content"].strip()
-            print(f"[{model}] Raw LLM response: {llm_response}")
+            print(f"[{model}] Raw LLM response (first 500 chars): {llm_response[:500]}")
+            print(f"[{model}] Raw LLM response length: {len(llm_response)} chars")
 
             # Handle garbage responses like "bonds"
             if not llm_response.startswith("{") or not llm_response.endswith("}"):
