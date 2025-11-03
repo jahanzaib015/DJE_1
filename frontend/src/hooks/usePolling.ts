@@ -22,6 +22,15 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
         const status = await AnalysisService.getJobStatus(jobId);
         // Use ref to avoid dependency issues
         onUpdateRef.current(status);
+        
+        // CRITICAL: Stop polling when job is completed or failed to prevent infinite requests
+        if (status.status === 'completed' || status.status === 'failed') {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+            console.log(`Polling stopped for job ${jobId}: status=${status.status}`);
+          }
+        }
       } catch (error: any) {
         console.error('Polling error:', error);
         console.error('Error details:', {
@@ -30,14 +39,11 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
           data: error.response?.data
         });
         
-        // If it's a 404 error, the job might not exist anymore
-        if (error.response?.status === 404) {
-          console.error(`Job ${jobId} not found on server`);
-          // Stop polling for this job
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
+        // Stop polling on any error (404, 500, network error, etc.)
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          console.error(`Polling stopped for job ${jobId} due to error`);
         }
       }
     };

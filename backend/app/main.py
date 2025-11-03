@@ -346,15 +346,16 @@ async def list_jobs():
 @app.get("/api/jobs/{job_id}/status")
 async def get_job_status(job_id: str):
     """Get job status"""
-    print(f"Requesting status for job: {job_id}")
-    print(f"Available jobs: {list(jobs.keys())}")
-    
+    # Reduced logging to prevent log spam
     if job_id not in jobs:
-        print(f"Job {job_id} not found in jobs dictionary")
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     
     job_status = jobs[job_id].dict()
-    print(f"Job {job_id} status: {job_status}")
+    # Only log if status changed or if it's an error state
+    status = job_status.get("status", "unknown")
+    if status in ["completed", "failed"]:
+        # Log once for completed/failed jobs, but don't spam
+        pass
     return job_status
 
 @app.get("/api/jobs/{job_id}/results")
