@@ -387,6 +387,28 @@ async def export_excel(job_id: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
+@app.get("/api/jobs/{job_id}/export/mapping")
+async def export_mapping_excel(job_id: str):
+    """Export Excel mapping table with filled ticks"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    if job.status != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+    
+    # Check if Excel mapping path exists in result
+    if analysis_service and analysis_service.excel_mapping:
+        excel_path = os.path.join(file_handler.export_dir, f"mapping_results_{job_id}.xlsx")
+        analysis_service.excel_mapping.export_to_excel(excel_path)
+        return FileResponse(
+            path=excel_path,
+            filename=f"instrument_mapping_{job_id}.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        raise HTTPException(status_code=404, detail="Excel mapping not available for this job")
+
 @app.get("/api/jobs/{job_id}/export/json")
 async def export_json(job_id: str):
     """Export results to JSON"""

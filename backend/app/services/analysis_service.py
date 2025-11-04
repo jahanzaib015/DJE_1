@@ -5,6 +5,7 @@ from datetime import datetime
 from .llm_service import LLMService
 from .rag_retrieve import retrieve_rules
 from .rag_index import build_chunks
+from .excel_mapping_service import ExcelMappingService
 from ..models.analysis_models import AnalysisResult, AnalysisMethod, LLMProvider, AnalysisRequest
 from ..utils.trace_handler import TraceHandler
 from ..utils.file_handler import FileHandler
@@ -12,7 +13,7 @@ from ..utils.file_handler import FileHandler
 class AnalysisService:
     """Core analysis service that orchestrates document analysis"""
     
-    def __init__(self):
+    def __init__(self, excel_mapping_path: Optional[str] = None):
         try:
             self.llm_service = LLMService()
         except Exception as e:
@@ -20,6 +21,14 @@ class AnalysisService:
             self.llm_service = None
         self.trace_handler = TraceHandler()
         self.file_handler = FileHandler()
+        
+        # Initialize Excel mapping service
+        try:
+            self.excel_mapping = ExcelMappingService(excel_path=excel_mapping_path)
+            print(f"Excel mapping service initialized with {len(self.excel_mapping.get_all_entries())} entries")
+        except Exception as e:
+            print(f"Warning: Failed to initialize ExcelMappingService: {e}")
+            self.excel_mapping = None
     
     async def analyze_document(
         self, 
@@ -234,10 +243,18 @@ class AnalysisService:
             if not isinstance(analysis, dict):
                 raise Exception(f"Invalid analysis response format: {type(analysis)}")
             
+            # Convert LLM response using Excel mapping (includes negative logic detection)
+            # Preserve original fund_id from data
+            converted_data = self._convert_llm_response_to_ocrd_format(analysis, full_text=text)
+            # Merge with original data structure to preserve fund_id
+            converted_data["fund_id"] = data.get("fund_id", "compliance_analysis")
+            data = converted_data
+            
+            # Legacy code below - keeping for backward compatibility but not used if Excel mapping is active
             # Apply LLM results to data structure using helper function
-            self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
-            self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
-            self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
             
             # Handle derivatives for both future and option sections
             try:
@@ -458,7 +475,7 @@ class AnalysisService:
                 if not isinstance(rule["reason"], str):
                     raise ValueError(f"Invalid 'reason' value in {key}: expected string, got {type(rule['reason'])}")
     
-    def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
+    def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any], full_text: Optional[str] = None) -> Dict[str, Any]:
         """Convert LLM response to OCRD format for Excel export"""
         # Debug: Print LLM response to help diagnose issues
         sector_count = len(llm_response.get('sector_rules', []))
@@ -560,11 +577,30 @@ class AnalysisService:
             # Add to notes
             data["notes"].append(f"Country rule: {country} - {'Allowed' if allowed else 'Prohibited'} - {reason}")
         
-        # Apply instrument rules
+        # Apply instrument rules using Excel mapping if available
         for rule in llm_response.get("instrument_rules", []):
             instrument = rule["instrument"].lower().strip()
             allowed = rule["allowed"]
             reason = rule["reason"]
+            
+            # Check for negative logic if Excel mapping is available
+            if self.excel_mapping:
+                # Use Excel mapping to find matching entries
+                # Use full text context if available for better negative logic detection
+                context_for_matching = full_text if full_text else reason
+                matching_entries = self.excel_mapping.find_matching_entries(instrument, context=context_for_matching)
+                
+                # Check for negative logic in the full text context (better detection)
+                is_negative, neg_explanation = self.excel_mapping.detect_negative_logic(context_for_matching, instrument)
+                if is_negative:
+                    allowed = not allowed  # Flip the logic
+                    reason = f"{reason} [Negative logic detected: {neg_explanation}]"
+                    print(f"[EXCEL MAPPING] Negative logic detected for '{instrument}': {neg_explanation}")
+                
+                # Update Excel mapping entries
+                for entry in matching_entries:
+                    self.excel_mapping.update_allowed_status(entry['row_id'], allowed, reason)
+                    print(f"[EXCEL MAPPING] Updated entry '{entry['instrument_category']}' (row {entry['row_id']}) to allowed={allowed}")
             
             # Normalize instrument name (handle underscores, spaces, hyphens)
             instrument_normalized = instrument.replace("_", " ").replace("-", " ")
