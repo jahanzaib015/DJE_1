@@ -372,7 +372,7 @@ async def get_job_results(job_id: str):
 
 @app.get("/api/jobs/{job_id}/export/excel")
 async def export_excel(job_id: str):
-    """Export results to Excel"""
+    """Export results to Excel - includes ALL 137 mapping entries"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
@@ -380,12 +380,23 @@ async def export_excel(job_id: str):
     if job.status != "completed":
         raise HTTPException(status_code=400, detail="Job not completed yet")
     
-    excel_path = await file_handler.create_excel_export(job.result)
-    return FileResponse(
-        path=excel_path,
-        filename=f"ocrd_results_{job_id}.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # If Excel mapping is available, export the full mapping table (137 entries)
+    if analysis_service and analysis_service.excel_mapping and len(analysis_service.excel_mapping.get_all_entries()) > 0:
+        excel_path = os.path.join(file_handler.export_dir, f"full_mapping_results_{job_id}.xlsx")
+        analysis_service.excel_mapping.export_to_excel(excel_path)
+        return FileResponse(
+            path=excel_path,
+            filename=f"instrument_mapping_full_{job_id}.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        # Fallback to OCRD export if mapping not available
+        excel_path = await file_handler.create_excel_export(job.result)
+        return FileResponse(
+            path=excel_path,
+            filename=f"ocrd_results_{job_id}.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 @app.get("/api/jobs/{job_id}/export/mapping")
 async def export_mapping_excel(job_id: str):

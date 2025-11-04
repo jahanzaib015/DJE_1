@@ -291,7 +291,8 @@ class ExcelMappingService:
     
     def export_to_excel(self, output_path: str) -> str:
         """
-        Export mapping data with filled ticks to Excel file.
+        Export ALL mapping data with filled ticks to Excel file.
+        This exports all 137 entries, regardless of whether they were matched.
         
         Args:
             output_path: Path to save the Excel file
@@ -300,9 +301,23 @@ class ExcelMappingService:
             Path to saved Excel file
         """
         try:
-            # Create DataFrame from mapping data
+            # Create DataFrame from ALL mapping data (all 137 entries)
             df_data = []
+            total_entries = len(self.mapping_data)
+            processed_count = 0
+            
             for entry in self.mapping_data:
+                # Determine allowed status
+                allowed_status = entry.get('allowed')
+                if allowed_status is True:
+                    allowed_display = '✓'
+                    processed_count += 1
+                elif allowed_status is False:
+                    allowed_display = ''
+                    processed_count += 1
+                else:
+                    allowed_display = ''  # Empty if not processed
+                
                 df_data.append({
                     'Instrument/Category': entry['instrument_category'],
                     'hint/notice': entry['hint_notice'],
@@ -310,11 +325,16 @@ class ExcelMappingService:
                     'Asset Tree Type2': entry['asset_tree_type2'],
                     'Asset Tree Type3': entry['asset_tree_type3'],
                     'restriction': entry['restriction'],
-                    'allowed': '✓' if entry.get('allowed') is True else '' if entry.get('allowed') is False else '',
+                    'allowed': allowed_display,
                     'reason': entry.get('reason', '')
                 })
             
             df = pd.DataFrame(df_data)
+            
+            print(f"[EXCEL EXPORT] Exporting {total_entries} total entries ({processed_count} processed, {total_entries - processed_count} unprocessed)")
+            
+            if total_entries != 137:
+                print(f"[WARNING] Expected 137 entries but found {total_entries}. Make sure you've loaded the full Excel file!")
             
             # Write to Excel with formatting
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
