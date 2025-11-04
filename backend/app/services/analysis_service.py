@@ -578,10 +578,23 @@ class AnalysisService:
             data["notes"].append(f"Country rule: {country} - {'Allowed' if allowed else 'Prohibited'} - {reason}")
         
         # Apply instrument rules using Excel mapping if available
-        for rule in llm_response.get("instrument_rules", []):
+        processed_instruments = set()  # Track which instruments we've processed
+        instrument_rules = llm_response.get("instrument_rules", [])
+        
+        if not instrument_rules:
+            print("[WARNING] No instrument_rules extracted from LLM! This is why allowed_count is 0.")
+            data["notes"].append("[WARNING] No instrument rules extracted from PDF. LLM may not have found any investment instruments mentioned.")
+        else:
+            print(f"[DEBUG] Processing {len(instrument_rules)} instrument rules from LLM")
+            allowed_count_in_rules = sum(1 for r in instrument_rules if r.get("allowed") is True)
+            print(f"[DEBUG] {allowed_count_in_rules}/{len(instrument_rules)} rules have allowed=True")
+        
+        for rule in instrument_rules:
             instrument = rule["instrument"].lower().strip()
             allowed = rule["allowed"]
             reason = rule["reason"]
+            
+            print(f"[DEBUG] Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
             
             # Check for negative logic if Excel mapping is available
             if self.excel_mapping:
@@ -597,10 +610,77 @@ class AnalysisService:
                     reason = f"{reason} [Negative logic detected: {neg_explanation}]"
                     print(f"[EXCEL MAPPING] Negative logic detected for '{instrument}': {neg_explanation}")
                 
-                # Update Excel mapping entries
+                # Update Excel mapping entries AND populate OCRD structure using Asset Tree
                 for entry in matching_entries:
                     self.excel_mapping.update_allowed_status(entry['row_id'], allowed, reason)
                     print(f"[EXCEL MAPPING] Updated entry '{entry['instrument_category']}' (row {entry['row_id']}) to allowed={allowed}")
+                    
+                    # Use Asset Tree to populate OCRD structure directly
+                    type1 = entry['asset_tree_type1'].lower().strip()
+                    type2 = entry['asset_tree_type2'].lower().strip()
+                    type3 = entry['asset_tree_type3'].lower().strip()
+                    
+                    if type1 and type1 in data["sections"]:
+                        # Map type2 to specific instrument names in OCRD schema
+                        type2_to_key = {
+                            "plain vanilla bond": "plain_vanilla_bond",
+                            "covered bond": "covered_bond",
+                            "asset backed security": "asset_backed_security",
+                            "mortgage bond": "mortgage_bond",
+                            "pfandbrief": "pfandbrief",
+                            "public mortgage bond": "public_mortgage_bond",
+                            "convertible bond": "convertible_bond_regular",
+                            "commercial paper": "commercial_paper",
+                            "inflation linked": "inflation_linked",
+                            "common stock": "common_stock",
+                            "preferred stock": "preferred_stock",
+                            "depositary receipt": "depositary_receipt",
+                            "equity fund": "equity_fund",
+                            "fixed income fund": "fixed_income_fund",
+                            "moneymarket fund": "moneymarket_fund",
+                            "real estate fund": "real_estate_fund",
+                            # Add more mappings as needed
+                        }
+                        
+                        # Try to find matching key in section
+                        section = data["sections"][type1]
+                        matched_key = None
+                        
+                        # First try type2 mapping
+                        if type2 and type2 in type2_to_key:
+                            key = type2_to_key[type2]
+                            if key in section:
+                                matched_key = key
+                        
+                        # If no match, try fuzzy matching on type2
+                        if not matched_key and type2:
+                            for key in section.keys():
+                                if key != "special_other_restrictions":
+                                    key_normalized = key.replace("_", " ").lower()
+                                    if type2 in key_normalized or key_normalized in type2:
+                                        matched_key = key
+                                        break
+                        
+                        # If still no match but type1 matches, apply to all in section (generic)
+                        if not matched_key:
+                            # Apply to all instruments in this section
+                            for key in section.keys():
+                                if key != "special_other_restrictions":
+                                    section[key]["allowed"] = allowed
+                                    section[key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
+                                    section[key]["evidence"] = {"page": 1, "text": reason}
+                        else:
+                            # Apply to specific matched key
+                            section[matched_key]["allowed"] = allowed
+                            section[matched_key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
+                            section[matched_key]["evidence"] = {"page": 1, "text": reason}
+                            print(f"[EXCEL MAPPING] Mapped '{entry['instrument_category']}' → {type1}/{matched_key} = {allowed}")
+                    
+                    processed_instruments.add(instrument)
+            
+            # Skip if already processed by Excel mapping
+            if instrument in processed_instruments:
+                continue
             
             # Normalize instrument name (handle underscores, spaces, hyphens)
             instrument_normalized = instrument.replace("_", " ").replace("-", " ")
