@@ -47,3 +47,8 @@ uploads/
 exports/
 backend/uploads/
 backend/exports/
+
+# Log files
+logs/
+backend/logs/
+*.log

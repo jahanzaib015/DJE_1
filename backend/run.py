@@ -20,10 +20,15 @@ if __name__ == "__main__":
     print("📚 API docs available at: http://localhost:8000/docs")
     print("=" * 50)
     
+    # Get host and port from environment variables (for Render deployment)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    reload = os.getenv("DEBUG", "False").lower() == "true"
+    
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
+        host=host,
+        port=port,
+        reload=reload,
         log_level="info"
     )
