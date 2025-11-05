@@ -43,20 +43,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize services with error handling
-try:
-    analysis_service = AnalysisService()
-    logger.info("✅ AnalysisService initialized successfully")
-except Exception as e:
-    logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
-    analysis_service = None
+# Initialize services (will be done in startup event to avoid blocking)
+analysis_service = None
+llm_service = None
 
-try:
-    llm_service = LLMService()
-    logger.info("✅ LLMService initialized successfully")
-except Exception as e:
-    logger.error(f"❌ Failed to initialize LLMService: {e}", exc_info=True)
-    llm_service = None
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup (non-blocking)"""
+    global analysis_service, llm_service
+    
+    logger.info("🚀 Starting service initialization...")
+    
+    # Initialize AnalysisService
+    try:
+        analysis_service = AnalysisService()
+        logger.info("✅ AnalysisService initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
+        analysis_service = None
+    
+    # Initialize LLMService
+    try:
+        llm_service = LLMService()
+        logger.info("✅ LLMService initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize LLMService: {e}", exc_info=True)
+        llm_service = None
+    
+    logger.info("✅ Startup complete")
 
 file_handler = FileHandler()
 trace_handler = TraceHandler()
@@ -156,8 +170,27 @@ async def read_root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - fast response for Render health checks"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.get("/health/live")
+async def liveness_check():
+    """Liveness check - minimal check that app is running"""
+    return {"status": "alive"}
+
+@app.get("/health/ready")
+async def readiness_check():
+    """Readiness check - verify services are ready"""
+    from fastapi import Response
+    ready = {
+        "status": "ready",
+        "services": {
+            "analysis_service": analysis_service is not None,
+            "llm_service": llm_service is not None
+        }
+    }
+    status_code = 200 if ready["services"]["analysis_service"] else 503
+    return Response(content=json.dumps(ready), status_code=status_code, media_type="application/json")
 
 # Backward-compatible health endpoint under /api
 @app.get("/api/health")
