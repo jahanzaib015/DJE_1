@@ -8,6 +8,7 @@ const compression = require('compression');
 const path = require('path');
 const FormData = require('form-data');
 const fs = require('fs');
+const morgan = require('morgan');
 require('dotenv').config();
 
 const app = express();
@@ -17,6 +18,50 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'https://dje-1-3.on
 // Middleware
 app.use(helmet());
 app.use(compression());
+
+// Enhanced logging middleware
+app.use(morgan('combined', {
+    skip: (req, res) => res.statusCode < 400,
+    stream: {
+        write: (message) => {
+            console.log(`[HTTP] ${message.trim()}`);
+        }
+    }
+}));
+
+// Request logging middleware
+app.use((req, res, next) => {
+    const requestId = req.headers['x-request-id'] || `req_${Date.now()}`;
+    req.requestId = requestId;
+    res.setHeader('X-Request-ID', requestId);
+    
+    const startTime = Date.now();
+    
+    // Log incoming request
+    const logData = {
+        requestId,
+        method: req.method,
+        path: req.path,
+        query: req.query,
+        headers: {
+            'content-type': req.headers['content-type'],
+            'user-agent': req.headers['user-agent'],
+            'origin': req.headers['origin']
+        },
+        ip: req.ip || req.connection.remoteAddress
+    };
+    
+    console.log(`📥 [${requestId}] INCOMING ${req.method} ${req.path}`, JSON.stringify(logData, null, 2));
+    
+    // Log response
+    res.on('finish', () => {
+        const duration = Date.now() - startTime;
+        const logLevel = res.statusCode >= 400 ? '❌' : '✅';
+        console.log(`${logLevel} [${requestId}] OUTGOING ${req.method} ${req.path} | Status: ${res.statusCode} | Duration: ${duration}ms`);
+    });
+    
+    next();
+});
 
 const allowedOrigins = [
   "https://dje-1-4.onrender.com",
@@ -65,6 +110,7 @@ const upload = multer({
 
 // Health check
 app.get('/api/health', (req, res) => {
+  console.log(`[${req.requestId}] Health check requested`);
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
@@ -74,13 +120,21 @@ app.get('/api/health', (req, res) => {
 
 // Test Python backend health
 app.get('/api/health/backend', async (req, res) => {
-  console.log('🔍 Checking backend health...');
+  console.log(`[${req.requestId}] 🔍 Checking backend health at ${PYTHON_BACKEND_URL}...`);
   try {
-    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/health`);
-    console.log('✅ Backend healthy:', response.data);
+    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/health`, {
+      timeout: 5000,
+      headers: {
+        'X-Request-ID': req.requestId
+      }
+    });
+    console.log(`[${req.requestId}] ✅ Backend healthy:`, JSON.stringify(response.data));
     res.json(response.data);
   } catch (error) {
-    console.error('❌ Backend health check failed:', error.message);
+    console.error(`[${req.requestId}] ❌ Backend health check failed:`, error.message);
+    if (error.response) {
+      console.error(`[${req.requestId}] Backend response:`, error.response.status, error.response.data);
+    }
     res.status(500).json({
       error: 'Backend health check failed',
       backend: PYTHON_BACKEND_URL,
@@ -103,18 +157,24 @@ app.get('/api/models', async (req, res) => {
 // ✅ FIXED FILE UPLOAD ENDPOINT — works on Render reliably
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!req.file) {
+      console.error(`[${req.requestId}] ❌ No file uploaded`);
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
 
-    console.log(`📤 Upload received: ${req.file.originalname} (${req.file.size} bytes)`);
-    console.log('📡 Forwarding to backend:', PYTHON_BACKEND_URL);
+    console.log(`[${req.requestId}] 📤 Upload received: ${req.file.originalname} (${req.file.size} bytes, ${req.file.mimetype})`);
+    console.log(`[${req.requestId}] 📡 Forwarding to backend: ${PYTHON_BACKEND_URL}/api/upload`);
 
     // 💤 Wake backend before upload (Render free-tier workaround)
     try {
-      await axios.get(`${PYTHON_BACKEND_URL}/api/health`, { timeout: 5000 });
-      console.log('✅ Python backend is awake');
+      await axios.get(`${PYTHON_BACKEND_URL}/api/health`, { 
+        timeout: 5000,
+        headers: { 'X-Request-ID': req.requestId }
+      });
+      console.log(`[${req.requestId}] ✅ Python backend is awake`);
     } catch (err) {
-      console.log('⚠️ Python backend unreachable before upload:', err.message);
-      console.log('⚠️ Continuing with upload anyway - backend may wake up during processing');
+      console.log(`[${req.requestId}] ⚠️ Python backend unreachable before upload: ${err.message}`);
+      console.log(`[${req.requestId}] ⚠️ Continuing with upload anyway - backend may wake up during processing`);
       // Don't return error - let the upload proceed and let the backend wake up naturally
     }
 
@@ -128,8 +188,12 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     });
 
     // Perform upload
+    console.log(`[${req.requestId}] 📤 Sending file to Python backend...`);
     const response = await axios.post(`${PYTHON_BACKEND_URL}/api/upload`, formData, {
-      headers: formData.getHeaders(),
+      headers: {
+        ...formData.getHeaders(),
+        'X-Request-ID': req.requestId
+      },
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
       timeout: 90000,
@@ -137,17 +201,21 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     fs.unlinkSync(req.file.path); // clean temp
 
-    console.log('✅ Upload success:', response.data);
+    console.log(`[${req.requestId}] ✅ Upload success:`, JSON.stringify(response.data));
     res.json(response.data);
   } catch (error) {
-    console.error('❌ Upload proxy error:', error.message);
+    console.error(`[${req.requestId}] ❌ Upload proxy error:`, error.message);
 
     if (error.response) {
-      console.error('Backend returned:', error.response.status, error.response.data);
+      console.error(`[${req.requestId}] Backend returned:`, error.response.status, JSON.stringify(error.response.data));
       res.status(error.response.status).json({
         error: error.response.data?.detail || error.response.data || 'Backend error',
       });
+    } else if (error.request) {
+      console.error(`[${req.requestId}] ❌ No response from backend:`, error.message);
+      res.status(503).json({ error: 'Backend unavailable: ' + error.message });
     } else {
+      console.error(`[${req.requestId}] ❌ Upload error:`, error.message);
       res.status(500).json({ error: 'Upload failed: ' + error.message });
     }
   }
@@ -156,33 +224,66 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // Analysis endpoint
 app.post('/api/analyze', async (req, res) => {
   try {
-    const response = await axios.post(`${PYTHON_BACKEND_URL}/api/analyze`, req.body);
+    console.log(`[${req.requestId}] 🚀 Starting analysis:`, JSON.stringify(req.body));
+    const response = await axios.post(`${PYTHON_BACKEND_URL}/api/analyze`, req.body, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Request-ID': req.requestId
+      },
+      timeout: 30000
+    });
+    console.log(`[${req.requestId}] ✅ Analysis started:`, JSON.stringify(response.data));
     res.json(response.data);
   } catch (error) {
-    console.error('❌ Analysis error:', error.message);
-    res.status(500).json({ error: 'Analysis failed' });
+    console.error(`[${req.requestId}] ❌ Analysis error:`, error.message);
+    if (error.response) {
+      console.error(`[${req.requestId}] Backend response:`, error.response.status, JSON.stringify(error.response.data));
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      res.status(500).json({ error: 'Analysis failed: ' + error.message });
+    }
   }
 });
 
 // Job status endpoint
 app.get('/api/jobs/:jobId/status', async (req, res) => {
   try {
-    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/jobs/${req.params.jobId}/status`);
+    const jobId = req.params.jobId;
+    console.log(`[${req.requestId}] 📊 Getting status for job: ${jobId}`);
+    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/jobs/${jobId}/status`, {
+      headers: { 'X-Request-ID': req.requestId },
+      timeout: 10000
+    });
+    console.log(`[${req.requestId}] ✅ Job status:`, response.data.status);
     res.json(response.data);
   } catch (error) {
-    console.error('❌ Status error:', error.message);
-    res.status(500).json({ error: 'Failed to get job status' });
+    console.error(`[${req.requestId}] ❌ Status error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      res.status(500).json({ error: 'Failed to get job status: ' + error.message });
+    }
   }
 });
 
 // Job results endpoint
 app.get('/api/jobs/:jobId/results', async (req, res) => {
   try {
-    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/jobs/${req.params.jobId}/results`);
+    const jobId = req.params.jobId;
+    console.log(`[${req.requestId}] 📋 Getting results for job: ${jobId}`);
+    const response = await axios.get(`${PYTHON_BACKEND_URL}/api/jobs/${jobId}/results`, {
+      headers: { 'X-Request-ID': req.requestId },
+      timeout: 30000
+    });
+    console.log(`[${req.requestId}] ✅ Results retrieved for job: ${jobId}`);
     res.json(response.data);
   } catch (error) {
-    console.error('❌ Results error:', error.message);
-    res.status(500).json({ error: 'Failed to get results' });
+    console.error(`[${req.requestId}] ❌ Results error:`, error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else {
+      res.status(500).json({ error: 'Failed to get results: ' + error.message });
+    }
   }
 });
 

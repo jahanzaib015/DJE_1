@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { AnalysisService } from '../services/AnalysisService';
 import { JobStatus } from '../types';
+import { logger } from '../utils/logger';
 
 export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) => void) => {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -28,22 +29,21 @@ export const usePolling = (jobId: string | null, onUpdate: (status: JobStatus) =
           if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
-            console.log(`Polling stopped for job ${jobId}: status=${status.status}`);
+            logger.info(`Polling stopped for job ${jobId}: status=${status.status}`);
           }
         }
       } catch (error: any) {
-        console.error('Polling error:', error);
-        console.error('Error details:', {
+        logger.error('Polling error:', {
           message: error.message,
           status: error.response?.status,
           data: error.response?.data
-        });
+        }, jobId);
         
         // Stop polling on any error (404, 500, network error, etc.)
         if (intervalRef.current) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
-          console.error(`Polling stopped for job ${jobId} due to error`);
+          logger.warn(`Polling stopped for job ${jobId} due to error`);
         }
       }
     };

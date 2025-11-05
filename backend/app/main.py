@@ -18,6 +18,11 @@ from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_neg
 from .models.analysis_models import AnalysisRequest, JobStatus
 from .utils.file_handler import FileHandler
 from .utils.trace_handler import TraceHandler
+from .utils.logger import setup_logger
+from .middleware.logging_middleware import LoggingMiddleware
+
+# Set up logging
+logger = setup_logger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -25,6 +30,9 @@ app = FastAPI(
     description="Modern OCRD document analysis with multiple LLM providers",
     version="1.0.0"
 )
+
+# Logging middleware (should be added before other middleware for full request/response logging)
+app.add_middleware(LoggingMiddleware)
 
 # CORS middleware
 app.add_middleware(
@@ -38,14 +46,16 @@ app.add_middleware(
 # Initialize services with error handling
 try:
     analysis_service = AnalysisService()
+    logger.info("✅ AnalysisService initialized successfully")
 except Exception as e:
-    print(f"Warning: Failed to initialize AnalysisService: {e}")
+    logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
     analysis_service = None
 
 try:
     llm_service = LLMService()
+    logger.info("✅ LLMService initialized successfully")
 except Exception as e:
-    print(f"Warning: Failed to initialize LLMService: {e}")
+    logger.error(f"❌ Failed to initialize LLMService: {e}", exc_info=True)
     llm_service = None
 
 file_handler = FileHandler()
@@ -66,9 +76,11 @@ def load_jobs():
                 jobs_data = json.load(f)
                 for job_id, job_data in jobs_data.items():
                     jobs[job_id] = JobStatus(**job_data)
-            print(f"Loaded {len(jobs)} jobs from persistence file")
+            logger.info(f"✅ Loaded {len(jobs)} jobs from persistence file")
+        else:
+            logger.info("No existing jobs file found, starting fresh")
     except Exception as e:
-        print(f"Error loading jobs from persistence: {e}")
+        logger.error(f"❌ Error loading jobs from persistence: {e}", exc_info=True)
 
 def save_jobs():
     """Save jobs to persistence file"""
@@ -76,8 +88,9 @@ def save_jobs():
         jobs_data = {job_id: job.dict() for job_id, job in jobs.items()}
         with open(JOBS_FILE, 'w') as f:
             json.dump(jobs_data, f, indent=2)
+        logger.debug(f"💾 Saved {len(jobs)} jobs to persistence file")
     except Exception as e:
-        print(f"Error saving jobs to persistence: {e}")
+        logger.error(f"❌ Error saving jobs to persistence: {e}", exc_info=True)
 
 # Load existing jobs on startup
 load_jobs()
@@ -103,10 +116,11 @@ def cleanup_old_jobs():
     
     for job_id in jobs_to_remove:
         del jobs[job_id]
-        print(f"Removed old job: {job_id}")
+        logger.info(f"🗑️ Removed old job: {job_id}")
     
     if jobs_to_remove:
         save_jobs()
+        logger.info(f"✅ Cleaned up {len(jobs_to_remove)} old jobs")
 
 # Cleanup old jobs on startup
 cleanup_old_jobs()
@@ -225,11 +239,11 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
 async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Run analysis in background with progress updates"""
     try:
-        print(f"Starting analysis for job {job_id}")
+        logger.info(f"🚀 Starting analysis for job {job_id} | Method: {request.analysis_method.value} | Provider: {request.llm_provider.value} | Model: {request.model}")
         
         # Check if job still exists
         if job_id not in jobs:
-            print(f"Job {job_id} not found in jobs dictionary")
+            logger.warning(f"⚠️ Job {job_id} not found in jobs dictionary")
             return
             
         # Update status
@@ -307,9 +321,9 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         allowed_count = result.get("allowed_instruments", 0)
         total_count = result.get("total_instruments", 0)
         notes_count = len(result.get("notes", []))
-        print(f"[JOB {job_id}] Analysis complete: {allowed_count}/{total_count} allowed, {notes_count} notes")
+        logger.info(f"✅ [JOB {job_id}] Analysis complete: {allowed_count}/{total_count} allowed instruments, {notes_count} notes")
         if notes_count > 0:
-            print(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
+            logger.debug(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
         
         save_jobs()  # Save completion
         
@@ -320,10 +334,8 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         await manager.send_message(job_id, jobs[job_id].dict())
         
     except Exception as e:
-        print(f"Analysis failed for job {job_id}: {str(e)}")
-        print(f"Exception type: {type(e).__name__}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"❌ Analysis failed for job {job_id}: {str(e)}", exc_info=True)
+        logger.error(f"Exception type: {type(e).__name__}")
         
         # Only update job status if job still exists
         if job_id in jobs:
@@ -332,8 +344,9 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
             jobs[job_id].message = f"Analysis failed: {str(e)}"
             save_jobs()  # Save error status
             await manager.send_message(job_id, jobs[job_id].dict())
+            logger.info(f"💾 Updated job {job_id} status to failed")
         else:
-            print(f"Job {job_id} not found when trying to update error status")
+            logger.warning(f"⚠️ Job {job_id} not found when trying to update error status")
 
 @app.get("/api/jobs")
 async def list_jobs():

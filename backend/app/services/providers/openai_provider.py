@@ -8,6 +8,9 @@ from ..llm_service import LLMProviderInterface
 # Add backend directory to path to import config
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from config import OPENAI_API_KEY
+from ...utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class OpenAIProvider(LLMProviderInterface):
@@ -16,7 +19,7 @@ class OpenAIProvider(LLMProviderInterface):
     def __init__(self):
         self.api_key = OPENAI_API_KEY
         if not self.api_key:
-            print("⚠️ Warning: OPENAI_API_KEY not configured. OpenAI provider will not be available.")
+            logger.warning("⚠️ OPENAI_API_KEY not configured. OpenAI provider will not be available.")
             self.api_key = None
 
         self.base_url = "https://api.openai.com/v1"
@@ -36,12 +39,12 @@ class OpenAIProvider(LLMProviderInterface):
             except Exception as e:
                 err_msg = str(e).lower()
                 tried_models.append(m)
-                print(f"Warning: Model '{m}' failed: {e}")
+                logger.warning(f"⚠️ Model '{m}' failed: {e}")
                 if "404" in err_msg or "does not exist" in err_msg:
-                    print(f"Skipping unavailable model '{m}'...")
+                    logger.info(f"⏭️ Skipping unavailable model '{m}'...")
                     continue
                 if "quota" in err_msg or "limit" in err_msg:
-                    print(f"Skipping model '{m}' due to quota limit...")
+                    logger.warning(f"⏭️ Skipping model '{m}' due to quota limit...")
                     continue
                 # Only retry if next model available
                 continue
@@ -64,7 +67,7 @@ class OpenAIProvider(LLMProviderInterface):
         # Truncate only if text exceeds safe limit
         text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
         if len(text) > max_text_length:
-            print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for analysis")
+            logger.warning(f"⚠️ Document is {len(text)} chars, truncating to {max_text_length} for analysis")
         
         prompt = f"""You are analyzing an official investment policy document.  
 The goal is to **extract factual rules** about where investments are allowed or restricted.  
@@ -144,19 +147,22 @@ Return ONLY valid JSON matching the required schema."""
 
             data = response.json()
             llm_response = data["choices"][0]["message"]["content"].strip()
-            print(f"[{model}] Raw LLM response (first 500 chars): {llm_response[:500]}")
-            print(f"[{model}] Raw LLM response length: {len(llm_response)} chars")
+            logger.debug(f"[{model}] Raw LLM response (first 500 chars): {llm_response[:500]}")
+            logger.debug(f"[{model}] Raw LLM response length: {len(llm_response)} chars")
 
             # Handle garbage responses like "bonds"
             if not llm_response.startswith("{") or not llm_response.endswith("}"):
-                print(f"Warning: Model '{model}' returned invalid JSON — wrapping fallback.")
+                logger.warning(f"⚠️ Model '{model}' returned invalid JSON — wrapping fallback.")
+                logger.debug(f"Invalid response preview: {llm_response[:200]}")
                 return self._fallback_response(f"Invalid model output: {llm_response}")
 
             try:
                 parsed = json.loads(llm_response)
+                logger.debug(f"✅ [{model}] Successfully parsed JSON response")
                 return self._validate_and_normalize_response(parsed)
             except json.JSONDecodeError as e:
-                print(f"Warning: Model '{model}' JSON parse failed: {e}")
+                logger.error(f"❌ Model '{model}' JSON parse failed: {e}")
+                logger.debug(f"Failed to parse: {llm_response[:500]}")
                 return self._fallback_response(f"Parsing error from {model}: {str(e)}")
 
     def _fallback_response(self, reason: str) -> Dict:

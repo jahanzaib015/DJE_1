@@ -8,6 +8,7 @@ import TraceViewer from './components/TraceViewer';
 import { usePolling } from './hooks/usePolling';
 import { AnalysisService } from './services/AnalysisService';
 import { JobStatus, AnalysisResult, Settings as SettingsType } from './types';
+import { logger } from './utils/logger';
 
 function App() {
   const [showSettings, setShowSettings] = useState(true);
@@ -29,9 +30,9 @@ function App() {
     const test = async () => {
       try {
         await AnalysisService.testConnection();
-        console.log('Initial connection test successful');
+        logger.info('Initial connection test successful');
       } catch (error) {
-        console.error('Initial connection test failed:', error);
+        logger.error('Initial connection test failed:', { error: (error as Error).message });
         alert('Connection test failed: ' + (error as Error).message);
       }
     };
@@ -50,8 +51,9 @@ function App() {
     try {
       const response = await AnalysisService.getResults(jobId);
       setResults(response);
+      logger.info(`Results fetched successfully for job ${jobId}`);
     } catch (error) {
-      console.error('Failed to fetch results:', error);
+      logger.error('Failed to fetch results:', { error: (error as Error).message, jobId });
     }
   };
 
@@ -75,7 +77,7 @@ function App() {
       setJobStatus({ job_id: analysisResponse.job_id, status: 'queued', progress: 0, message: 'Queued' });
       setResults(null);
     } catch (error) {
-      console.error('Upload failed:', error);
+      logger.error('Upload failed:', { error: (error as Error).message });
       alert('Upload failed: ' + (error as Error).message);
     }
   };
@@ -86,7 +88,7 @@ function App() {
     try {
       await AnalysisService.exportExcel(currentJob);
     } catch (error) {
-      console.error('Export failed:', error);
+      logger.error('Export failed:', { error: (error as Error).message, jobId: currentJob });
       alert('Export failed: ' + (error as Error).message);
     }
   };
@@ -97,7 +99,7 @@ function App() {
     try {
       await AnalysisService.exportJson(results);
     } catch (error) {
-      console.error('Export failed:', error);
+      logger.error('Export failed:', { error: (error as Error).message, jobId: currentJob });
       alert('Export failed: ' + (error as Error).message);
     }
   };
