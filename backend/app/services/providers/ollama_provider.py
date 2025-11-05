@@ -2,6 +2,9 @@ import httpx
 import json
 from typing import Dict, List
 from ..interfaces.llm_provider_interface import LLMProviderInterface
+from ...utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class OllamaProvider(LLMProviderInterface):
     """Ollama LLM provider implementation"""
@@ -40,7 +43,7 @@ class OllamaProvider(LLMProviderInterface):
         # Truncate only if text exceeds safe limit
         text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
         if len(text) > max_text_length:
-            print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for Ollama analysis")
+            logger.warning(f"Document is {len(text)} chars, truncating to {max_text_length} for Ollama analysis")
         
         prompt = f"""Analyze this financial document and respond with ONLY a JSON object.
 

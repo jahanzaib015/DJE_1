@@ -8,6 +8,9 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import re
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class ExcelMappingService:
@@ -93,10 +96,10 @@ class ExcelMappingService:
             # Build lookup indexes
             self._build_lookup_indexes()
             
-            print(f"Loaded {len(self.mapping_data)} entries from Excel file: {excel_path}")
+            logger.info(f"Loaded {len(self.mapping_data)} entries from Excel file: {excel_path}")
             
         except Exception as e:
-            print(f"Error loading Excel file: {e}")
+            logger.error(f"Error loading Excel file: {e}", exc_info=True)
             raise Exception(f"Failed to load Excel mapping file: {str(e)}")
     
     def _load_from_code(self) -> None:
@@ -109,12 +112,12 @@ class ExcelMappingService:
             from ..utils.embedded_mapping import MAPPING_DATA
             self.mapping_data = MAPPING_DATA
             self._build_lookup_indexes()
-            print(f"Excel mapping loaded from embedded code: {len(self.mapping_data)} entries")
+            logger.info(f"Excel mapping loaded from embedded code: {len(self.mapping_data)} entries")
         except ImportError:
             # Fallback: empty mapping if embedded file doesn't exist
             self.mapping_data = []
             self._build_lookup_indexes()
-            print("Excel mapping loaded from code (empty - run load_excel_mapping.py to populate)")
+            logger.info("Excel mapping loaded from code (empty - run load_excel_mapping.py to populate)")
     
     def _build_lookup_indexes(self) -> None:
         """Build fast lookup indexes for matching"""
@@ -331,10 +334,10 @@ class ExcelMappingService:
             
             df = pd.DataFrame(df_data)
             
-            print(f"[EXCEL EXPORT] Exporting {total_entries} total entries ({processed_count} processed, {total_entries - processed_count} unprocessed)")
+            logger.info(f"EXCEL EXPORT: Exporting {total_entries} total entries ({processed_count} processed, {total_entries - processed_count} unprocessed)")
             
             if total_entries != 137:
-                print(f"[WARNING] Expected 137 entries but found {total_entries}. Make sure you've loaded the full Excel file!")
+                logger.warning(f"Expected 137 entries but found {total_entries}. Make sure you've loaded the full Excel file!")
             
             # Write to Excel with formatting
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -366,7 +369,7 @@ class ExcelMappingService:
                     adjusted_width = min(max_length + 2, 80)
                     worksheet.column_dimensions[column_letter].width = adjusted_width
             
-            print(f"Exported mapping results to: {output_path}")
+            logger.info(f"Exported mapping results to: {output_path}")
             return output_path
             
         except Exception as e:

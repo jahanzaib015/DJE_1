@@ -6,6 +6,9 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 import aiofiles
 from pathlib import Path
+from .logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class TraceHandler:
     """Handles forensic tracing for document analysis pipeline"""
@@ -328,4 +331,4 @@ class TraceHandler:
                     if current_time - creation_time > max_age_seconds:
                         import shutil
                         shutil.rmtree(trace_path)
-                        print(f"Cleaned up old trace: {item}")
+                        logger.debug(f"Cleaned up old trace: {item}")

@@ -6,6 +6,9 @@ import hashlib
 import os
 import uuid
 from typing import Dict, List, Any, Optional
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # Try to import camelot for table extraction
 try:
@@ -13,7 +16,7 @@ try:
     CAMELOT_AVAILABLE = True
 except ImportError:
     CAMELOT_AVAILABLE = False
-    print("Warning: Camelot not available. Table extraction will be disabled.")
+    # Camelot not available - table extraction will be disabled
 
 # Try to import chromadb, fall back to mock if not available
 try:
@@ -22,7 +25,7 @@ try:
     CHROMADB_AVAILABLE = True
 except ImportError:
     CHROMADB_AVAILABLE = False
-    print("Warning: ChromaDB not available. RAG indexing will use mock mode.")
+    # ChromaDB not available - RAG indexing will use mock mode
 
 # Initialize OpenAI client only if API key is available
 try:
@@ -31,7 +34,7 @@ try:
 except Exception:
     client = None
     OPENAI_AVAILABLE = False
-    print("Warning: OpenAI API key not found. Embedding generation will be disabled.")
+    # OpenAI API key not found - embedding generation will be disabled
 
 NEG_CUES = r"\b(not|no|except|unless|excluded|exclusion|prohibit|forbidden|restricted|ban(?:ned)?)\b"
 
@@ -71,7 +74,7 @@ def extract_tables(pdf_path: str) -> List[Dict[str, Any]]:
         return table_chunks
         
     except Exception as e:
-        print(f"Warning: Table extraction failed: {str(e)}")
+        logger.warning(f"Table extraction failed: {str(e)}")
         return []
 
 def chunk_text(text: str) -> List[Dict[str, Any]]:

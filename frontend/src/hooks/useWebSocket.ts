@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { JobStatus } from '../types';
+import { logger } from '../utils/logger';
 
 export const useWebSocket = () => {
   const connections = useRef<Map<string, WebSocket>>(new Map());
@@ -9,7 +10,7 @@ export const useWebSocket = () => {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//dje-1-3.onrender.com/ws/jobs/${jobId}`;
-    console.log('Connecting to WebSocket:', wsUrl); // 👈 add this for verification
+    logger.info('Connecting to WebSocket', { wsUrl });
 
     const ws = new WebSocket(wsUrl);
 
@@ -18,17 +19,17 @@ export const useWebSocket = () => {
         const data = JSON.parse(event.data) as JobStatus;
         onMessage(data);
       } catch (error) {
-        console.error('Failed to parse WebSocket message:', error);
+        logger.error('Failed to parse WebSocket message', { error });
       }
     };
 
     ws.onclose = () => {
-      console.warn('WebSocket closed for job', jobId);
+      logger.warn('WebSocket closed for job', { jobId });
       connections.current.delete(jobId);
     };
 
     ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      logger.error('WebSocket error', { error, jobId });
       connections.current.delete(jobId);
     };
 

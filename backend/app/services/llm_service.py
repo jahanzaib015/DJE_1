@@ -9,6 +9,9 @@ import openai
 from .interfaces.llm_provider_interface import LLMProviderInterface
 from .providers.openai_provider import OpenAIProvider
 from ..utils.trace_handler import TraceHandler
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # Robust system prompt for compliance analysis
 SYSTEM_PROMPT = """You are a senior compliance analyst specializing in investment restrictions.
@@ -79,11 +82,11 @@ class LLMService:
                     http_client=http_client
                 )
             except Exception as e:
-                print(f"Warning: Failed to initialize OpenAI client: {str(e)}")
-                print("Warning: OpenAI API key not found. Embedding generation will be disabled.")
+                logger.warning(f"Failed to initialize OpenAI client: {str(e)}")
+                logger.warning("OpenAI API key not found. Embedding generation will be disabled.")
                 self.client = None
         else:
-            print("Warning: OpenAI API key not found. Embedding generation will be disabled.")
+            logger.warning("OpenAI API key not found. Embedding generation will be disabled.")
         
         self.providers = {
             "openai": OpenAIProvider()
@@ -117,7 +120,7 @@ class LLMService:
             return json.loads(cleaned)
 
         except Exception as e:
-            print("LLM Error:", e)
+            logger.error(f"LLM Error: {e}", exc_info=True)
             return {"error": str(e)}
     
     async def analyze_document(self, text: str, provider: str, model: str, trace_id: Optional[str] = None) -> Dict:
@@ -133,7 +136,7 @@ class LLMService:
         # Truncate only if text exceeds safe limit
         text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
         if len(text) > max_text_length:
-            print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for analysis")
+            logger.warning(f"Document is {len(text)} chars, truncating to {max_text_length} for analysis")
         
         # Create dynamic user prompt
         user_prompt = f"""You are analyzing an official investment policy document.  
@@ -220,7 +223,7 @@ Return only structured JSON, matching this schema exactly:
             
             # Handle model not available - try fallback models
             if "404" in err_msg or "does not exist" in err_msg:
-                print(f"Warning: Model '{model}' unavailable. Falling back to 'gpt-4o-mini'")
+                logger.warning(f"Model '{model}' unavailable. Falling back to 'gpt-4o-mini'")
                 try:
                     response = await self.client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -235,7 +238,7 @@ Return only structured JSON, matching this schema exactly:
                     result = json.loads(cleaned)
                     return self._validate_result(result)
                 except Exception as inner_e:
-                    print(f"Warning: gpt-4o-mini also failed, falling back to 'gpt-3.5-turbo'")
+                    logger.warning("gpt-4o-mini also failed, falling back to 'gpt-3.5-turbo'")
                     response = await self.client.chat.completions.create(
                         model="gpt-3.5-turbo",
                         temperature=0,
@@ -336,7 +339,7 @@ Return only structured JSON, matching this schema exactly:
             # Truncate only if text exceeds safe limit
             text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
             if len(text) > max_text_length:
-                print(f"Warning: Document is {len(text)} chars, truncating to {max_text_length} for analysis")
+                logger.warning(f"Document is {len(text)} chars, truncating to {max_text_length} for analysis")
             
             prompt = f"""You are analyzing an official investment policy document.  
 The goal is to **extract factual rules** about where investments are allowed or restricted.  

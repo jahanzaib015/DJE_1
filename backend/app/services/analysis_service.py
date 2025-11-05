@@ -9,6 +9,9 @@ from .excel_mapping_service import ExcelMappingService
 from ..models.analysis_models import AnalysisResult, AnalysisMethod, LLMProvider, AnalysisRequest
 from ..utils.trace_handler import TraceHandler
 from ..utils.file_handler import FileHandler
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class AnalysisService:
     """Core analysis service that orchestrates document analysis"""
@@ -17,7 +20,7 @@ class AnalysisService:
         try:
             self.llm_service = LLMService()
         except Exception as e:
-            print(f"Warning: Failed to initialize LLMService in AnalysisService: {e}")
+            logger.warning(f"Failed to initialize LLMService in AnalysisService: {e}")
             self.llm_service = None
         self.trace_handler = TraceHandler()
         self.file_handler = FileHandler()
@@ -25,9 +28,9 @@ class AnalysisService:
         # Initialize Excel mapping service
         try:
             self.excel_mapping = ExcelMappingService(excel_path=excel_mapping_path)
-            print(f"Excel mapping service initialized with {len(self.excel_mapping.get_all_entries())} entries")
+            logger.info(f"Excel mapping service initialized with {len(self.excel_mapping.get_all_entries())} entries")
         except Exception as e:
-            print(f"Warning: Failed to initialize ExcelMappingService: {e}")
+            logger.warning(f"Failed to initialize ExcelMappingService: {e}")
             self.excel_mapping = None
     
     async def analyze_document(
@@ -296,7 +299,7 @@ class AnalysisService:
                                 "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                             }
             except Exception as e:
-                print(f"Error processing derivatives: {e}")
+                logger.error(f"Error processing derivatives: {e}", exc_info=True)
                 # Set derivatives to uncertain on error
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
@@ -318,7 +321,7 @@ class AnalysisService:
             return data, analysis
             
         except Exception as e:
-            print(f"LLM analysis error: {e}")
+            logger.error(f"LLM analysis error: {e}", exc_info=True)
             # Return data with error notes instead of failing completely
             for section_name in ["bond", "stock", "fund", "future", "option"]:
                 if section_name in data["sections"]:
@@ -423,8 +426,8 @@ class AnalysisService:
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
             # If decision is False or any other value, leave as default (False)
-        except Exception as e:
-            print(f"Error applying LLM decision for {investment_type}: {e}")
+            except Exception as e:
+                logger.error(f"Error applying LLM decision for {investment_type}: {e}", exc_info=True)
             # Set all items to uncertain on error
             for key in section_keys:
                 if key != "special_other_restrictions":
@@ -482,16 +485,16 @@ class AnalysisService:
         country_count = len(llm_response.get('country_rules', []))
         instrument_count = len(llm_response.get('instrument_rules', []))
         
-        print(f"[DEBUG] LLM Response: sector_rules={sector_count}, "
+        logger.debug(f"LLM Response: sector_rules={sector_count}, "
               f"country_rules={country_count}, "
               f"instrument_rules={instrument_count}")
         
         if llm_response.get("instrument_rules"):
-            print(f"[DEBUG] First 3 instrument rules:")
+            logger.debug("First 3 instrument rules:")
             for i, rule in enumerate(llm_response['instrument_rules'][:3]):
-                print(f"  [{i+1}] {rule}")
+                logger.debug(f"  [{i+1}] {rule}")
         else:
-            print(f"[DEBUG] WARNING: instrument_rules is EMPTY!")
+            logger.warning("instrument_rules is EMPTY!")
         
         # Validate first
         self._validate_llm_response(llm_response)
@@ -502,13 +505,13 @@ class AnalysisService:
         # Add debug info to notes so it's visible in results
         debug_info = f"[DEBUG] LLM returned: {sector_count} sector rules, {country_count} country rules, {instrument_count} instrument rules"
         data["notes"].append(debug_info)
-        print(debug_info)
+        logger.debug(debug_info)
         
         # Log actual instrument rules if any
         if instrument_count > 0:
-            print(f"[DEBUG] Instrument rules details:")
+            logger.debug("Instrument rules details:")
             for i, rule in enumerate(llm_response.get("instrument_rules", [])[:5]):
-                print(f"  [{i+1}] instrument='{rule.get('instrument', 'N/A')}', allowed={rule.get('allowed', 'N/A')}, reason='{rule.get('reason', 'N/A')[:100]}...'")
+                logger.debug(f"  [{i+1}] instrument='{rule.get('instrument', 'N/A')}', allowed={rule.get('allowed', 'N/A')}, reason='{rule.get('reason', 'N/A')[:100]}...'")
                 data["notes"].append(
                     f"[DEBUG] Rule {i+1}: '{rule.get('instrument', 'N/A')}' = {rule.get('allowed', 'N/A')}"
                 )
@@ -582,19 +585,19 @@ class AnalysisService:
         instrument_rules = llm_response.get("instrument_rules", [])
         
         if not instrument_rules:
-            print("[WARNING] No instrument_rules extracted from LLM! This is why allowed_count is 0.")
+            logger.warning("No instrument_rules extracted from LLM! This is why allowed_count is 0.")
             data["notes"].append("[WARNING] No instrument rules extracted from PDF. LLM may not have found any investment instruments mentioned.")
         else:
-            print(f"[DEBUG] Processing {len(instrument_rules)} instrument rules from LLM")
+            logger.debug(f"Processing {len(instrument_rules)} instrument rules from LLM")
             allowed_count_in_rules = sum(1 for r in instrument_rules if r.get("allowed") is True)
-            print(f"[DEBUG] {allowed_count_in_rules}/{len(instrument_rules)} rules have allowed=True")
+            logger.debug(f"{allowed_count_in_rules}/{len(instrument_rules)} rules have allowed=True")
         
         for rule in instrument_rules:
             instrument = rule["instrument"].lower().strip()
             allowed = rule["allowed"]
             reason = rule["reason"]
             
-            print(f"[DEBUG] Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
+            logger.debug(f"Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
             
             # Check for negative logic if Excel mapping is available
             if self.excel_mapping:
@@ -608,12 +611,12 @@ class AnalysisService:
                 if is_negative:
                     allowed = not allowed  # Flip the logic
                     reason = f"{reason} [Negative logic detected: {neg_explanation}]"
-                    print(f"[EXCEL MAPPING] Negative logic detected for '{instrument}': {neg_explanation}")
+                    logger.info(f"EXCEL MAPPING: Negative logic detected for '{instrument}': {neg_explanation}")
                 
                 # Update Excel mapping entries AND populate OCRD structure using Asset Tree
                 for entry in matching_entries:
                     self.excel_mapping.update_allowed_status(entry['row_id'], allowed, reason)
-                    print(f"[EXCEL MAPPING] Updated entry '{entry['instrument_category']}' (row {entry['row_id']}) to allowed={allowed}")
+                    logger.debug(f"EXCEL MAPPING: Updated entry '{entry['instrument_category']}' (row {entry['row_id']}) to allowed={allowed}")
                     
                     # Use Asset Tree to populate OCRD structure directly
                     type1 = entry['asset_tree_type1'].lower().strip()
@@ -674,7 +677,7 @@ class AnalysisService:
                             section[matched_key]["allowed"] = allowed
                             section[matched_key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
                             section[matched_key]["evidence"] = {"page": 1, "text": reason}
-                            print(f"[EXCEL MAPPING] Mapped '{entry['instrument_category']}' → {type1}/{matched_key} = {allowed}")
+                            logger.debug(f"EXCEL MAPPING: Mapped '{entry['instrument_category']}' → {type1}/{matched_key} = {allowed}")
                     
                     processed_instruments.add(instrument)
             
@@ -830,13 +833,13 @@ class AnalysisService:
                             }
                             instrument_found = True
                             match_msg = f"[DEBUG] ✓ Matched '{instrument}' → '{key}' in '{section}'"
-                            print(match_msg)
+                            logger.debug(match_msg)
                             data["notes"].append(match_msg)  # Add to notes for visibility
                             break  # Stop after first match to avoid duplicate matches
                 
                 # CRITICAL: For generic terms, apply to ALL instruments in that section
                 if not instrument_found and is_generic:
-                    print(f"[DEBUG] Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section")
+                    logger.debug(f"Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section")
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
@@ -851,7 +854,7 @@ class AnalysisService:
                     )
                 elif not instrument_found and section:
                     # Non-generic term but no match - apply to first instrument in section as fallback
-                    print(f"[DEBUG] Warning: Could not match instrument '{instrument}' to specific instrument in '{section}', applying to all in section")
+                    logger.warning(f"Could not match instrument '{instrument}' to specific instrument in '{section}', applying to all in section")
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
@@ -865,7 +868,7 @@ class AnalysisService:
                     )
                 elif not section:
                     # Couldn't even determine which section this belongs to
-                    print(f"[DEBUG] ERROR: Could not determine section for instrument '{instrument}'")
+                    logger.error(f"Could not determine section for instrument '{instrument}'")
                     data["notes"].append(
                         f"ERROR: Unmatched instrument rule '{instrument}' = {'Allowed' if allowed else 'Not Allowed'}. "
                         f"Could not determine instrument category. Reason: {reason}"
@@ -883,7 +886,7 @@ class AnalysisService:
         )
         final_debug = f"[DEBUG] After processing: {final_allowed_count} instruments set to allowed=True"
         data["notes"].append(final_debug)
-        print(final_debug)
+        logger.debug(final_debug)
         
         return data
 

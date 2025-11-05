@@ -17,6 +17,9 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from .trace_handler import TraceHandler
 from ..services.rag_index import index_pdf
+from .logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # Try to import NLTK for sentence tokenization
 try:
@@ -37,7 +40,6 @@ try:
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
-    print("Warning: LangChain not available. Using fallback text chunking.")
 
 # Try to import optional dependencies
 try:
@@ -217,7 +219,7 @@ class FileHandler:
                 
                 # Heuristic: if too little text, try OCR
                 if char_count < 2000:
-                    print(f"Low text count ({char_count}), attempting OCR...")
+                    logger.info(f"Low text count ({char_count}), attempting OCR...")
                     ocr_texts = await self._extract_with_ocr(file_path, trace_dir)
                     if ocr_texts and sum(len(t) for t in ocr_texts) > char_count:
                         page_texts = ocr_texts
@@ -307,7 +309,7 @@ class FileHandler:
             return page_texts
             
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"OCR failed: {e}")
+            logger.warning(f"OCR failed: {e}")
             return []
     
     def _clean_text_robust(self, page_texts: List[str]) -> str:
@@ -347,7 +349,7 @@ class FileHandler:
         
         # Method 1: Try lattice first (line-drawn tables)
         try:
-            print("Attempting table extraction with lattice flavor...")
+            logger.debug("Attempting table extraction with lattice flavor...")
             lattice_tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
             
             for table in lattice_tables:
@@ -366,14 +368,14 @@ class FileHandler:
                 table_data.append(table_dict)
                 table_id += 1
                 
-            print(f"Lattice extraction found {len(lattice_tables)} tables")
+            logger.info(f"Lattice extraction found {len(lattice_tables)} tables")
             
         except Exception as e:
-            print(f"Lattice table extraction failed: {e}")
+            logger.warning(f"Lattice table extraction failed: {e}")
         
         # Method 2: Try stream (whitespace-separated tables)
         try:
-            print("Attempting table extraction with stream flavor...")
+            logger.debug("Attempting table extraction with stream flavor...")
             stream_tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
             
             for table in stream_tables:
@@ -392,12 +394,12 @@ class FileHandler:
                 table_data.append(table_dict)
                 table_id += 1
                 
-            print(f"Stream extraction found {len(stream_tables)} tables")
+            logger.info(f"Stream extraction found {len(stream_tables)} tables")
             
         except Exception as e:
-            print(f"Stream table extraction failed: {e}")
+            logger.warning(f"Stream table extraction failed: {e}")
         
-        print(f"Total tables extracted: {len(table_data)}")
+        logger.info(f"Total tables extracted: {len(table_data)}")
         return table_data
     
     def _convert_table_to_markdown(self, df, table_id: int, page: int, method: str) -> str:
@@ -423,7 +425,7 @@ class FileHandler:
             return "\n".join(markdown_lines)
             
         except Exception as e:
-            print(f"Error converting table {table_id} to markdown: {e}")
+            logger.error(f"Error converting table {table_id} to markdown: {e}", exc_info=True)
             # Fallback to simple text format
             return f"=== TABLE {table_id} (page {page}) - {method.upper()} ===\n{df.to_string(index=False)}\n=== END TABLE {table_id} ==="
     
@@ -684,7 +686,7 @@ class FileHandler:
             return jsonl_path
             
         except Exception as e:
-            print(f"Failed to save chunks JSONL: {e}")
+            logger.error(f"Failed to save chunks JSONL: {e}", exc_info=True)
             return None
     
     async def create_excel_export(self, data: dict) -> str:

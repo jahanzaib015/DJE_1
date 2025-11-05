@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Settings as SettingsType } from '../types';
 import { AnalysisService } from '../services/AnalysisService';
+import { logger } from '../utils/logger';
 
 interface SettingsProps {
   settings: SettingsType;
@@ -20,7 +21,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
           models.openai_models || ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']
         );
       } catch (error) {
-        console.error('Failed to fetch models:', error);
+        logger.error('Failed to fetch models', { error });
         setAvailableModels(['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']);
       }
     };

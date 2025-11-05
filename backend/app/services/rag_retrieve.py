@@ -3,6 +3,9 @@ from typing import List, Dict, Any, Optional
 import os
 import json
 from ..utils.trace_handler import TraceHandler
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 # Try to import chromadb, fall back to mock if not available
 try:
@@ -10,7 +13,7 @@ try:
     CHROMADB_AVAILABLE = True
 except ImportError:
     CHROMADB_AVAILABLE = False
-    print("Warning: ChromaDB not available. RAG retrieval will use mock mode.")
+    # ChromaDB not available - RAG retrieval will use mock mode
 
 
 def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tmp/chroma", trace_id: str = None) -> List[Dict[str, Any]]:
@@ -104,12 +107,12 @@ def retrieve_rules(query: str, doc_id: str, k: int = 5, vectordb_dir: str = "/tm
                         }
                     })
             except Exception as e:
-                print(f"Warning: Failed to log retrieval results: {e}")
+                logger.warning(f"Failed to log retrieval results: {e}")
         
         return results
         
     except Exception as e:
-        print(f"Error in retrieve_rules: {e}")
+        logger.error(f"Error in retrieve_rules: {e}", exc_info=True)
         return []
 
 
@@ -197,12 +200,12 @@ def _retrieve_rules_mock(query: str, doc_id: str, k: int = 5, vectordb_dir: str 
                         }
                     })
             except Exception as e:
-                print(f"Warning: Failed to log retrieval results: {e}")
+                logger.warning(f"Failed to log retrieval results: {e}")
         
         return results
         
     except Exception as e:
-        print(f"Error in _retrieve_rules_mock: {e}")
+        logger.error(f"Error in _retrieve_rules_mock: {e}", exc_info=True)
         return []
 
 
@@ -283,7 +286,7 @@ def get_chunk_by_id(chunk_id: str, vectordb_dir: str = "/tmp/chroma") -> Optiona
         return None
         
     except Exception as e:
-        print(f"Error in get_chunk_by_id: {e}")
+        logger.error(f"Error in get_chunk_by_id: {e}", exc_info=True)
         return None
 
 
@@ -309,5 +312,5 @@ def _get_chunk_by_id_mock(chunk_id: str, vectordb_dir: str = "/tmp/chroma") -> O
         return None
         
     except Exception as e:
-        print(f"Error in _get_chunk_by_id_mock: {e}")
+        logger.error(f"Error in _get_chunk_by_id_mock: {e}", exc_info=True)
         return None
