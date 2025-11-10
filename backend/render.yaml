@@ -5,9 +5,10 @@ services:
     plan: free
     buildCommand: |
       pip install --upgrade pip
+      cd backend
       pip install -r requirements.txt
     startCommand: |
-      python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      cd backend && python run.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -30,4 +31,4 @@ services:
       - key: DEFAULT_MODEL
         value: gpt-4
       - key: DEFAULT_ANALYSIS_METHOD
-        value: llm_with_fallback
+        value: llm
