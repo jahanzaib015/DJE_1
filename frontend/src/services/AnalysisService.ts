@@ -2,7 +2,8 @@ import axios from 'axios';
 import { AnalysisRequest, JobStatus, AnalysisResult } from '../types';
 import { logger } from '../utils/logger';
 
-const API_BASE_URL = 'https://dje-1-3.onrender.com';
+// Use environment variable for API URL, fallback to localhost for local development
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export class AnalysisService {
   static async uploadFile(file: File) {
@@ -56,7 +57,7 @@ export class AnalysisService {
     
     try {
       const response = await axios.post(`${API_BASE_URL}/api/analyze`, request, {
-        timeout: 30000, // 30 second timeout
+        timeout: 120000, // 120 second timeout (2 minutes) - analysis starts async, but backend may be slow to respond
         headers: {
           'Content-Type': 'application/json',
           'X-Request-ID': requestId

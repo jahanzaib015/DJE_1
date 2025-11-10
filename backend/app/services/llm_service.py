@@ -2,7 +2,6 @@ import httpx
 import json
 import os
 import time
-from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 import openai
@@ -14,20 +13,21 @@ from ..utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 # Robust system prompt for compliance analysis
-SYSTEM_PROMPT = """You are a senior compliance analyst specializing in investment restrictions.
+SYSTEM_PROMPT = """You are a senior compliance analyst specializing in investment rules.
 
 CRITICAL INSTRUCTIONS:
 - Extract rules that are CLEARLY stated in the document (don't invent rules that aren't there)
-- Recognize common policy language: "permitted", "allowed", "authorized", "may invest" = allowed; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = not allowed
+- Look for BOTH allowed AND prohibited items - don't only focus on restrictions
+- Recognize common policy language: "permitted", "allowed", "authorized", "may invest", "can invest" = allowed=true; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = allowed=false
+- IMPORTANT: If document says investments are generally permitted or lists what can be invested in, mark those as allowed=true
+- Only mark as not allowed if explicitly prohibited or restricted
 - Extract rules even if they're stated indirectly (e.g., "prohibited from investing in tobacco" = tobacco sector not allowed)
 - Do NOT mix different rule categories (keep sectors, countries, instruments separate)
-- Do NOT drift into general policy discussion
-- Look for buried restrictions in tables, footnotes, and appendices - search the ENTIRE document
-- Carefully examine every section of the document - rules can appear anywhere (beginning, middle, end)
+- Look for buried rules in tables, footnotes, and appendices - search the ENTIRE document
 - Systematically search through all parts of the document text provided
 - If text is unclear or contradictory, record it in conflicts section
 
-Your task: Extract factual rules about where investments are permitted or prohibited based on what the document clearly states. Search through the entire document systematically and extract ALL rules you can identify.
+Your task: Extract factual rules about where investments are permitted OR prohibited. Search through the entire document systematically and extract ALL rules you can identify - both what IS allowed and what is NOT allowed.
 
 Return ONLY valid JSON matching the required schema:
 {
@@ -46,18 +46,6 @@ Return ONLY valid JSON matching the required schema:
 }"""
 
 
-class LLMProviderInterface(ABC):
-    """Abstract interface for LLM providers"""
-    
-    @abstractmethod
-    async def analyze_document(self, text: str, model: str) -> Dict:
-        pass
-    
-    @abstractmethod
-    def get_available_models(self) -> List[str]:
-        pass
-
-
 class LLMService:
     """Service for managing different LLM providers with fallback and validation"""
     
@@ -71,8 +59,10 @@ class LLMService:
             try:
                 # Create a custom httpx client without proxies to avoid compatibility issues
                 # This prevents the "unexpected keyword argument 'proxies'" error
+                # Use connection pooling for faster requests (reuse connections)
                 http_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(60.0),
+                    timeout=httpx.Timeout(60.0, connect=10.0),  # Longer timeout for large docs, fast connection
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
                     # Explicitly don't pass proxies parameter
                 )
                 
@@ -130,7 +120,7 @@ class LLMService:
         
         # Calculate safe text limit: modern models (GPT-4o, GPT-4o-mini) have 128k context window
         # Reserve ~10k tokens for prompt and response, leaving ~100k tokens (~400k chars) for document
-        # Use 100k chars as a conservative safe limit that works for all models
+        # Keep full limit for comprehensive document analysis
         max_text_length = 100000
         
         # Truncate only if text exceeds safe limit
@@ -138,31 +128,23 @@ class LLMService:
         if len(text) > max_text_length:
             logger.warning(f"Document is {len(text)} chars, truncating to {max_text_length} for analysis")
         
-        # Create dynamic user prompt
-        user_prompt = f"""You are analyzing an official investment policy document.  
-The goal is to **extract factual rules** about where investments are allowed or restricted.  
+        # Optimized prompt that explicitly looks for BOTH allowed and restricted items
+        user_prompt = f"""Extract investment rules from this document. Search entire text.
 
-**CRITICAL: You must carefully search through the ENTIRE document text provided below. Rules can appear anywhere - in the beginning, middle, end, in tables, footnotes, appendices, or any section.**
+CRITICAL: Look for BOTH:
+- What IS ALLOWED: "permitted", "allowed", "authorized", "may invest", "can invest"
+- What IS NOT ALLOWED: "prohibited", "forbidden", "not allowed", "restricted", "excluded"
 
-**How to identify rules:**
-- Look for statements about what investments are **permitted**, **allowed**, **authorized**, **approved**, or **may be invested in**
-- Look for statements about what investments are **prohibited**, **forbidden**, **not allowed**, **restricted**, **excluded**, or **may not be invested in**
-- Rules are often stated using phrases like: "investments are permitted in...", "the fund may invest in...", "investments in X are not allowed", "prohibited from investing in...", "subject to restrictions on..."
-- Extract rules based on what the document CLEARLY states, even if it doesn't use the exact words "allowed" or "not allowed"
+Rules to find:
+- Sectors: Energy, Healthcare, Defense, Tobacco, Weapons, etc.
+- Countries: USA, China, Russia, Europe, etc.  
+- Instruments: bonds, stocks, funds, derivatives, options, futures, swaps, etc.
 
-Your task:
-1. Systematically identify EVERY rule related to:
-   - Investment sectors (e.g., Energy, Healthcare, Defense, Technology, Tobacco, Weapons, etc.)
-   - Countries or regions (e.g., USA, China, Russia, Europe, etc.)
-   - Financial instruments - use specific instrument names if mentioned (e.g., covered_bond, asset_backed_security, mortgage_bond, convertible_bond, commercial_paper, common_stock, preferred_stock, equity_fund, fixed_income_fund, derivatives, options, futures, warrants, swaps, etc.). If the document mentions generic terms like "bonds" or "stocks", use those terms.
-2. For each rule you find, determine:
-   - Whether it indicates investments are **allowed** (permitted/authorized) or **not allowed** (prohibited/restricted)
-   - A short **reason or quote** from the policy text supporting your conclusion
-3. Search through ALL sections of the document - rules may be stated in multiple places.
-4. Extract rules even if they're stated indirectly (e.g., "investments in tobacco companies are prohibited" means "tobacco sector: not allowed")
-5. If conflicting or unclear information appears, record it in a "conflicts" section.
+IMPORTANT: If document says investments are generally permitted, mark instruments as allowed=true. Only mark as not allowed if explicitly prohibited.
 
-Return only structured JSON, matching this schema exactly:
+For each rule found, mark "allowed": true if permitted, false if prohibited, with brief reason.
+
+Return JSON only:
 {{
   "sector_rules": [{{"sector": "string", "allowed": true/false, "reason": "string"}}],
   "country_rules": [{{"country": "string", "allowed": true/false, "reason": "string"}}],
@@ -170,7 +152,7 @@ Return only structured JSON, matching this schema exactly:
   "conflicts": [{{"category": "string", "detail": "string"}}]
 }}
 
-**Document text to analyze (search through all of it carefully):**
+Document:
 {text_to_analyze}"""
 
         if trace_id:
@@ -188,10 +170,11 @@ Return only structured JSON, matching this schema exactly:
             await self.trace_handler.save_llm_prompt(trace_id, prompt_data)
 
         try:
-            # Use new OpenAI client approach
+            # Use new OpenAI client approach with optimized settings for speed
             response = await self.client.chat.completions.create(
                 model=model,
-                temperature=0,
+                temperature=0,  # Deterministic for faster processing
+                max_tokens=4000,  # Full limit for comprehensive rule extraction
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}

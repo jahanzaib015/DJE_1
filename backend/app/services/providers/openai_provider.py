@@ -3,7 +3,8 @@ import json
 import os
 import sys
 from typing import Dict, List
-from ..llm_service import LLMProviderInterface
+from ..interfaces.llm_provider_interface import LLMProviderInterface
+from ...models.llm_response_models import LLMResponse
 
 # Add backend directory to path to import config
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -23,8 +24,9 @@ class OpenAIProvider(LLMProviderInterface):
             self.api_key = None
 
         self.base_url = "https://api.openai.com/v1"
-        # Preferred model order (highest quality first)
-        self.model_priority = ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+        # Preferred model order (fastest first for speed optimization)
+        # gpt-4o-mini is 2-3x faster than gpt-4o with similar quality
+        self.model_priority = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
 
     async def analyze_document(self, text: str, model: str) -> Dict:
         """Analyze document using OpenAI ChatGPT with automatic fallback chain"""
@@ -59,40 +61,36 @@ class OpenAIProvider(LLMProviderInterface):
 
     async def _analyze_with_model(self, text: str, model: str) -> Dict:
         """Core analysis call to OpenAI API"""
-        # Calculate safe text limit: modern models (GPT-4o, GPT-4o-mini) have 128k context window
-        # Reserve ~10k tokens for prompt and response, leaving ~100k tokens (~400k chars) for document
-        # Use 100k chars as a conservative safe limit that works for all models
-        max_text_length = 100000
+        # Calculate safe text limit based on model context window
+        # GPT-4: 8k tokens (~32k chars), GPT-4o/GPT-5: 128k tokens (~512k chars)
+        # Reserve ~4k tokens for prompt and response
+        if model in ["gpt-4", "gpt-4-turbo"]:
+            max_text_length = 25000  # ~6k tokens for GPT-4 (8k context - 2k for prompt/response)
+        else:
+            max_text_length = 100000  # Modern models - full limit for comprehensive analysis
         
         # Truncate only if text exceeds safe limit
         text_to_analyze = text if len(text) <= max_text_length else text[:max_text_length]
         if len(text) > max_text_length:
-            logger.warning(f"⚠️ Document is {len(text)} chars, truncating to {max_text_length} for analysis")
+            logger.warning(f"⚠️ Document is {len(text)} chars, truncating to {max_text_length} for analysis with {model}")
         
-        prompt = f"""You are analyzing an official investment policy document.  
-The goal is to **extract factual rules** about where investments are allowed or restricted.  
+        # Optimized prompt that explicitly looks for BOTH allowed and restricted items
+        prompt = f"""Extract investment rules from this document. Search entire text.
 
-**CRITICAL: You must carefully search through the ENTIRE document text provided below. Rules can appear anywhere - in the beginning, middle, end, in tables, footnotes, appendices, or any section.**
+CRITICAL: Look for BOTH:
+- What IS ALLOWED: "permitted", "allowed", "authorized", "may invest", "can invest"
+- What IS NOT ALLOWED: "prohibited", "forbidden", "not allowed", "restricted", "excluded"
 
-**How to identify rules:**
-- Look for statements about what investments are **permitted**, **allowed**, **authorized**, **approved**, or **may be invested in**
-- Look for statements about what investments are **prohibited**, **forbidden**, **not allowed**, **restricted**, **excluded**, or **may not be invested in**
-- Rules are often stated using phrases like: "investments are permitted in...", "the fund may invest in...", "investments in X are not allowed", "prohibited from investing in...", "subject to restrictions on..."
-- Extract rules based on what the document CLEARLY states, even if it doesn't use the exact words "allowed" or "not allowed"
+Rules to find:
+- Sectors: Energy, Healthcare, Defense, Tobacco, Weapons, etc.
+- Countries: USA, China, Russia, Europe, etc.  
+- Instruments: bonds, stocks, funds, derivatives, options, futures, swaps, etc.
 
-Your task:
-1. Systematically identify EVERY rule related to:
-   - Investment sectors (e.g., Energy, Healthcare, Defense, Technology, Tobacco, Weapons, etc.)
-   - Countries or regions (e.g., USA, China, Russia, Europe, etc.)
-   - Financial instruments - use specific instrument names if mentioned (e.g., covered_bond, asset_backed_security, mortgage_bond, convertible_bond, commercial_paper, common_stock, preferred_stock, equity_fund, fixed_income_fund, derivatives, options, futures, warrants, swaps, etc.). If the document mentions generic terms like "bonds" or "stocks", use those terms.
-2. For each rule you find, determine:
-   - Whether it indicates investments are **allowed** (permitted/authorized) or **not allowed** (prohibited/restricted)
-   - A short **reason or quote** from the policy text supporting your conclusion
-3. Search through ALL sections of the document - rules may be stated in multiple places.
-4. Extract rules even if they're stated indirectly (e.g., "investments in tobacco companies are prohibited" means "tobacco sector: not allowed")
-5. If conflicting or unclear information appears, record it in a "conflicts" section.
+IMPORTANT: If document says investments are generally permitted, mark instruments as allowed=true. Only mark as not allowed if explicitly prohibited.
 
-Return only structured JSON, matching this schema exactly:
+For each rule found, mark "allowed": true if permitted, false if prohibited, with brief reason.
+
+Return JSON only:
 {{
   "sector_rules": [{{"sector": "string", "allowed": true/false, "reason": "string"}}],
   "country_rules": [{{"country": "string", "allowed": true/false, "reason": "string"}}],
@@ -100,10 +98,14 @@ Return only structured JSON, matching this schema exactly:
   "conflicts": [{{"category": "string", "detail": "string"}}]
 }}
 
-**Document text to analyze (search through all of it carefully):**
+Document:
 {text_to_analyze}"""
 
-        async with httpx.AsyncClient(timeout=80.0) as client:
+        # Use connection pooling for faster requests (reuse connections)
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),  # Longer timeout for large documents, but fast connection
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        ) as client:
             payload = {
                 "model": model,
                 "messages": [
@@ -113,24 +115,34 @@ Return only structured JSON, matching this schema exactly:
 
 CRITICAL INSTRUCTIONS:
 - Extract rules that are CLEARLY stated in the document (don't invent rules that aren't there)
-- Recognize common policy language: "permitted", "allowed", "authorized", "may invest" = allowed; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = not allowed
+- Look for BOTH allowed AND prohibited items - don't only focus on restrictions
+- Recognize common policy language: "permitted", "allowed", "authorized", "may invest", "can invest" = allowed=true; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = allowed=false
+- IMPORTANT: If document says investments are generally permitted or lists what can be invested in, mark those as allowed=true
+- Only mark as not allowed if explicitly prohibited or restricted
 - Extract rules even if they're stated indirectly (e.g., "prohibited from investing in tobacco" = tobacco sector not allowed)
 - Do NOT mix different rule categories (keep sectors, countries, instruments separate)
-- Do NOT drift into general policy discussion
-- Look for buried restrictions in tables, footnotes, and appendices - search the ENTIRE document
-- Carefully examine every section of the document - rules can appear anywhere
+- Look for buried rules in tables, footnotes, and appendices - search the ENTIRE document
 - If text is unclear or contradictory, record it in conflicts section
 
-Your task: Extract factual rules about where investments are permitted or prohibited based on what the document clearly states. Search through the entire document systematically and extract ALL rules you can identify.
+Your task: Extract factual rules about where investments are permitted OR prohibited. Search through the entire document systematically and extract ALL rules you can identify - both what IS allowed and what is NOT allowed.
 
 Return ONLY valid JSON matching the required schema."""
                     },
                     {"role": "user", "content": prompt},
                 ],
-                "temperature": 0.2,
+                "temperature": 0,  # Lower temperature for faster, more deterministic responses
                 "top_p": 1,
-                "max_tokens": 4000,
             }
+            
+            # Use correct parameter name based on model
+            # o1 models use max_completion_tokens, others use max_tokens
+            if model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12"]:
+                # Newer o1 models use max_completion_tokens
+                payload["max_completion_tokens"] = 4000
+            else:
+                # Standard models (gpt-4o, gpt-4-turbo, etc.) use max_tokens
+                # Keep full max_tokens for comprehensive rule extraction
+                payload["max_tokens"] = 4000
 
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -159,7 +171,17 @@ Return ONLY valid JSON matching the required schema."""
             try:
                 parsed = json.loads(llm_response)
                 logger.debug(f"✅ [{model}] Successfully parsed JSON response")
-                return self._validate_and_normalize_response(parsed)
+                
+                # Use Pydantic for validation and normalization
+                try:
+                    validated_response = LLMResponse.from_dict(parsed)
+                    logger.debug(f"✅ [{model}] Pydantic validation passed")
+                    return validated_response.to_dict()
+                except Exception as validation_error:
+                    logger.warning(f"⚠️ [{model}] Pydantic validation failed: {validation_error}")
+                    # Fallback to manual normalization for backward compatibility
+                    return self._validate_and_normalize_response(parsed)
+                    
             except json.JSONDecodeError as e:
                 logger.error(f"❌ Model '{model}' JSON parse failed: {e}")
                 logger.debug(f"Failed to parse: {llm_response[:500]}")

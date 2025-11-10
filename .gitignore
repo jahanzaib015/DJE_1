@@ -52,3 +52,13 @@ backend/exports/
 logs/
 backend/logs/
 *.log
+
+# Application data (sensitive)
+jobs_persistence.json
+backend/jobs_persistence.json
+traces/
+backend/traces/
+var/
+backend/var/
+*.sqlite3
+*.db

@@ -14,10 +14,11 @@ app_dir = Path(__file__).parent / "app"
 sys.path.insert(0, str(app_dir))
 
 if __name__ == "__main__":
-    print("🚀 Starting OCRD Extractor API...")
-    print("📄 Modern document analysis with multiple LLM providers")
-    print("🌐 Server will be available at: http://localhost:8000")
-    print("📚 API docs available at: http://localhost:8000/docs")
+    # Use plain text to avoid encoding issues on Windows
+    print("Starting OCRD Extractor API...")
+    print("Modern document analysis with multiple LLM providers")
+    print("Server will be available at: http://localhost:8000")
+    print("API docs available at: http://localhost:8000/docs")
     print("=" * 50)
     
     # Get host and port from environment variables (for Render deployment)
@@ -26,7 +27,7 @@ if __name__ == "__main__":
     reload = os.getenv("DEBUG", "False").lower() == "true"
     
     uvicorn.run(
-        "main:app",
+        "app.main:app",
         host=host,
         port=port,
         reload=reload,

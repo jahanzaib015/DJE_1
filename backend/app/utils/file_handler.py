@@ -339,10 +339,46 @@ class FileHandler:
         
         return text.strip()
     
+    def _check_camelot_dependencies(self) -> Dict[str, bool]:
+        """Check if Camelot system dependencies are available"""
+        deps = {
+            "ghostscript": False,
+            "tkinter": False
+        }
+        
+        # Check for Ghostscript
+        try:
+            result = subprocess.run(
+                ["gs", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            if result.returncode == 0:
+                deps["ghostscript"] = True
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            pass
+        
+        # Check for Tkinter (usually available with Python)
+        try:
+            import tkinter
+            deps["tkinter"] = True
+        except ImportError:
+            pass
+        
+        return deps
+    
     async def _extract_tables(self, file_path: str, trace_dir: Path) -> List[Dict]:
         """Extract tables from PDF using Camelot with both lattice and stream flavors"""
         if not CAMELOT_AVAILABLE:
+            logger.debug("Camelot not available - skipping table extraction")
             return []
+        
+        # Check dependencies once
+        deps = self._check_camelot_dependencies()
+        if not deps["ghostscript"]:
+            logger.debug("Ghostscript not found - Camelot table extraction may fail. Install Ghostscript for table extraction support.")
         
         table_data = []
         table_id = 1
@@ -368,10 +404,18 @@ class FileHandler:
                 table_data.append(table_dict)
                 table_id += 1
                 
-            logger.info(f"Lattice extraction found {len(lattice_tables)} tables")
+            if len(lattice_tables) > 0:
+                logger.info(f"Lattice extraction found {len(lattice_tables)} tables")
             
         except Exception as e:
-            logger.warning(f"Lattice table extraction failed: {e}")
+            error_msg = str(e).lower()
+            # Provide more specific error messages
+            if "file format not supported" in error_msg or "not supported" in error_msg:
+                logger.debug(f"Lattice extraction: PDF format not compatible with table detection (this is normal for some PDFs)")
+            elif "ghostscript" in error_msg or "gs" in error_msg:
+                logger.warning(f"Lattice extraction failed: Ghostscript not found. Install Ghostscript for table extraction.")
+            else:
+                logger.debug(f"Lattice table extraction failed: {type(e).__name__} - {str(e)[:100]}")
         
         # Method 2: Try stream (whitespace-separated tables)
         try:
@@ -394,12 +438,24 @@ class FileHandler:
                 table_data.append(table_dict)
                 table_id += 1
                 
-            logger.info(f"Stream extraction found {len(stream_tables)} tables")
+            if len(stream_tables) > 0:
+                logger.info(f"Stream extraction found {len(stream_tables)} tables")
             
         except Exception as e:
-            logger.warning(f"Stream table extraction failed: {e}")
+            error_msg = str(e).lower()
+            # Provide more specific error messages
+            if "file format not supported" in error_msg or "not supported" in error_msg:
+                logger.debug(f"Stream extraction: PDF format not compatible with table detection (this is normal for some PDFs)")
+            elif "ghostscript" in error_msg or "gs" in error_msg:
+                logger.warning(f"Stream extraction failed: Ghostscript not found. Install Ghostscript for table extraction.")
+            else:
+                logger.debug(f"Stream table extraction failed: {type(e).__name__} - {str(e)[:100]}")
         
-        logger.info(f"Total tables extracted: {len(table_data)}")
+        if len(table_data) == 0:
+            logger.debug("No tables extracted from PDF (this is normal if PDF has no extractable tables or is image-based)")
+        else:
+            logger.info(f"Total tables extracted: {len(table_data)}")
+        
         return table_data
     
     def _convert_table_to_markdown(self, df, table_id: int, page: int, method: str) -> str:

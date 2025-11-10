@@ -1,4 +1,3 @@
-from chromadb import PersistentClient
 from typing import List, Dict, Any, Optional
 import os
 import json
@@ -13,6 +12,7 @@ try:
     CHROMADB_AVAILABLE = True
 except ImportError:
     CHROMADB_AVAILABLE = False
+    PersistentClient = None  # Placeholder for type hints
     # ChromaDB not available - RAG retrieval will use mock mode
 
 

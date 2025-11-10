@@ -317,33 +317,48 @@
                         
                         const uploadData = await uploadResponse.json();
                         
-                        // Start analysis
-                        const analysisResponse = await fetch('/api/analyze', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                file_path: uploadData.file_path,
-                                analysis_method: this.settings.analysisMethod,
-                                llm_provider: this.settings.llmProvider,
-                                model: this.settings.model,
-                                fund_id: this.settings.fundId
-                            })
-                        });
+                        // Start analysis with timeout
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
                         
-                        if (!analysisResponse.ok) {
-                            throw new Error('Analysis failed to start');
+                        try {
+                            const analysisResponse = await fetch('/api/analyze', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    file_path: uploadData.file_path,
+                                    analysis_method: this.settings.analysisMethod,
+                                    llm_provider: this.settings.llmProvider,
+                                    model: this.settings.model,
+                                    fund_id: this.settings.fundId
+                                }),
+                                signal: controller.signal
+                            });
+                            clearTimeout(timeoutId);
+                        
+                            if (!analysisResponse.ok) {
+                                const errorText = await analysisResponse.text();
+                                throw new Error('Analysis failed to start: ' + errorText);
+                            }
+                            
+                            const analysisData = await analysisResponse.json();
+                            this.currentJob = analysisData.job_id;
+                            
+                            // Connect to WebSocket for real-time updates
+                            this.connectWebSocket(analysisData.job_id);
+                        } catch (fetchError) {
+                            clearTimeout(timeoutId);
+                            if (fetchError.name === 'AbortError') {
+                                throw new Error('Request timed out. The server may be processing. Please try again or check the backend logs.');
+                            }
+                            throw fetchError;
                         }
-                        
-                        const analysisData = await analysisResponse.json();
-                        this.currentJob = analysisData.job_id;
-                        
-                        // Connect to WebSocket for real-time updates
-                        this.connectWebSocket(analysisData.job_id);
                         
                     } catch (error) {
                         alert('Error: ' + error.message);
+                        console.error('Analysis error:', error);
                     } finally {
                         this.uploading = false;
                     }

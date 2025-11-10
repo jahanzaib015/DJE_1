@@ -14,7 +14,8 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'https://dje-1-3.onrender.com';
+// Use localhost for local development, or Render URL for production
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || (process.env.NODE_ENV === 'production' ? 'https://dje-1-3.onrender.com' : 'http://localhost:8000');
 
 // Middleware
 app.use(helmet());

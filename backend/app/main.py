@@ -1,4 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,9 +22,16 @@ from .utils.file_handler import FileHandler
 from .utils.trace_handler import TraceHandler
 from .utils.logger import setup_logger
 from .middleware.logging_middleware import LoggingMiddleware
+from .models.analysis_models import AnalysisMethod, LLMProvider
 
 # Set up logging
 logger = setup_logger(__name__)
+
+def get_enum_value(value):
+    """Safely get enum value, handling both enum objects and strings"""
+    if hasattr(value, 'value'):
+        return value.value
+    return str(value)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -30,6 +39,38 @@ app = FastAPI(
     description="Modern OCRD document analysis with multiple LLM providers",
     version="1.0.0"
 )
+
+# Add exception handler for validation errors to see what's wrong
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Custom handler to log validation errors in detail"""
+    errors = exc.errors()
+    error_details = []
+    for error in errors:
+        error_details.append({
+            "field": ".".join(str(x) for x in error.get("loc", [])),
+            "message": error.get("msg"),
+            "type": error.get("type"),
+            "input": error.get("input")
+        })
+    
+    logger.error(f"❌ Validation error on {request.url.path}: {error_details}")
+    
+    # Try to log request body
+    try:
+        body = await request.body()
+        if body:
+            logger.debug(f"Request body: {body.decode('utf-8', errors='ignore')[:500]}")
+    except:
+        pass
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": error_details,
+            "message": "Validation error - check the 'detail' field for specific field errors"
+        }
+    )
 
 # Logging middleware (should be added before other middleware for full request/response logging)
 app.add_middleware(LoggingMiddleware)
@@ -203,14 +244,14 @@ async def get_available_models():
     if llm_service is None:
         return {
             "ollama_models": [],
-            "openai_models": ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-            "default_model": "gpt-5",
+            "openai_models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo"],
+            "default_model": "gpt-4o",
             "warning": "LLM service not initialized"
         }
     return {
         "ollama_models": llm_service.get_ollama_models() if llm_service else [],
-        "openai_models": ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
-        "default_model": "gpt-5"
+        "openai_models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo"],
+        "default_model": "gpt-4o"
     }
 
 @app.post("/api/upload")
@@ -233,10 +274,26 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
+@app.post("/api/analyze/test")
+async def test_analyze_endpoint(request: AnalysisRequest):
+    """Test endpoint to verify request validation works"""
+    return {
+        "message": "Request validated successfully",
+        "received": {
+            "file_path": request.file_path,
+            "analysis_method": str(request.analysis_method),
+            "llm_provider": str(request.llm_provider),
+            "model": request.model,
+            "fund_id": request.fund_id
+        }
+    }
+
 @app.post("/api/analyze")
 async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True):
     """Start document analysis"""
     try:
+        # Log the received request for debugging
+        logger.debug(f"Received analysis request: file_path={request.file_path}, method={request.analysis_method}, provider={request.llm_provider}, model={request.model}")
         # Generate job ID
         job_id = str(uuid.uuid4())
         
@@ -254,8 +311,8 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
             created_at=datetime.now().isoformat()
         )
         
-        # Save to persistence
-        save_jobs()
+        # Save to persistence in background (don't block response)
+        asyncio.create_task(asyncio.to_thread(save_jobs))
         
         # Start analysis in background
         asyncio.create_task(run_analysis(job_id, request, trace_id))
@@ -264,6 +321,7 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
         if trace_id:
             response["trace_id"] = trace_id
         
+        logger.info(f"✅ Analysis job {job_id} queued successfully")
         return response
         
     except Exception as e:
@@ -272,7 +330,7 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
 async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Run analysis in background with progress updates"""
     try:
-        logger.info(f"🚀 Starting analysis for job {job_id} | Method: {request.analysis_method.value} | Provider: {request.llm_provider.value} | Model: {request.model}")
+        logger.info(f"🚀 Starting analysis for job {job_id} | Method: {get_enum_value(request.analysis_method)} | Provider: {get_enum_value(request.llm_provider)} | Model: {request.model}")
         
         # Check if job still exists
         if job_id not in jobs:
@@ -297,8 +355,8 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
                 "job_id": job_id,
                 "filename": os.path.basename(request.file_path),
                 "file_path": request.file_path,
-                "analysis_method": request.analysis_method.value,
-                "llm_provider": request.llm_provider.value,
+                "analysis_method": get_enum_value(request.analysis_method),
+                "llm_provider": get_enum_value(request.llm_provider),
                 "model": request.model,
                 "fund_id": request.fund_id,
                 "ocr_enabled": False,  # Currently not using OCR

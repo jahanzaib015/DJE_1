@@ -7,11 +7,18 @@ from .rag_retrieve import retrieve_rules
 from .rag_index import build_chunks
 from .excel_mapping_service import ExcelMappingService
 from ..models.analysis_models import AnalysisResult, AnalysisMethod, LLMProvider, AnalysisRequest
+from ..models.llm_response_models import LLMResponse
 from ..utils.trace_handler import TraceHandler
 from ..utils.file_handler import FileHandler
 from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+def get_enum_value(value):
+    """Safely get enum value, handling both enum objects and strings"""
+    if hasattr(value, 'value'):
+        return value.value
+    return str(value)
 
 class AnalysisService:
     """Core analysis service that orchestrates document analysis"""
@@ -49,33 +56,13 @@ class AnalysisService:
         # Create empty OCRD structure
         data = self._create_empty_ocrd_json(fund_id)
         
-        # COMMENTED OUT: Only using OpenAI API for now
-        # if analysis_method == AnalysisMethod.KEYWORDS:
-        #     # Use fast keyword analysis
-        #     result = self._analyze_with_keywords(data, text)
-        #     analysis_method_used = "keywords"
-        #     
-        # elif analysis_method == AnalysisMethod.LLM:
-        #     # Use LLM analysis only
-        #     result = await self._analyze_with_llm(data, text, llm_provider, model)
-        #     analysis_method_used = f"llm_{llm_provider.value}"
-        #     
-        # elif analysis_method == AnalysisMethod.LLM_WITH_FALLBACK:
-        #     # Try LLM first, fallback to keywords
-        #     try:
-        #         result = await self._analyze_with_llm(data, text, llm_provider, model)
-        #         analysis_method_used = f"llm_{llm_provider.value}"
-        #     except Exception as e:
-        #         print(f"LLM failed ({e}), using keyword fallback")
-        #         result = self._analyze_with_keywords(data, text)
-        #         analysis_method_used = "keywords_fallback"
-        
-        # ONLY USING OPENAI API - All requests go through OpenAI
+        # ONLY USE LLM ANALYSIS - No keyword analysis or fallback
+        # All analysis methods use LLM only
         if trace_id:
             result, raw_analysis = await self._analyze_with_llm_traced(data, text, llm_provider, model, trace_id)
         else:
             result, raw_analysis = await self._analyze_with_llm(data, text, llm_provider, model, trace_id)
-        analysis_method_used = f"llm_{llm_provider.value}"
+        analysis_method_used = f"llm_{get_enum_value(llm_provider)}"
         
         processing_time = time.time() - start_time
         
@@ -93,7 +80,7 @@ class AnalysisService:
         return {
             "fund_id": fund_id,
             "analysis_method": analysis_method_used,
-            "llm_provider": llm_provider.value,
+            "llm_provider": get_enum_value(llm_provider),
             "model": model,
             "total_instruments": total_instruments,
             "allowed_instruments": allowed_instruments,
@@ -145,7 +132,7 @@ class AnalysisService:
             Context:
             {combined_context}
             """
-            llm_response = await llm_service.analyze_document(llm_prompt, request.llm_provider.value, request.model, trace_id)
+            llm_response = await llm_service.analyze_document(llm_prompt, get_enum_value(request.llm_provider), request.model, trace_id)
             trace_handler.log_step("llm_response", {"length": len(str(llm_response))})
 
             # 7. Convert LLM output into structured format
@@ -240,7 +227,7 @@ class AnalysisService:
         """LLM-based analysis - returns (structured_data, raw_analysis)"""
         try:
             # Get LLM analysis
-            analysis = await self.llm_service.analyze_document(text, llm_provider.value, model, trace_id)
+            analysis = await self.llm_service.analyze_document(text, get_enum_value(llm_provider), model, trace_id)
             
             # Validate analysis response
             if not isinstance(analysis, dict):
@@ -268,7 +255,7 @@ class AnalysisService:
                     for key in data["sections"]["future"]:
                         if key != "special_other_restrictions":
                             data["sections"]["future"][key]["allowed"] = True
-                            data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
+                            data["sections"]["future"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives allowed - {evidence_text}"
                             data["sections"]["future"][key]["evidence"] = {
                                 "page": 1,
                                 "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -276,7 +263,7 @@ class AnalysisService:
                     for key in data["sections"]["option"]:
                         if key != "special_other_restrictions":
                             data["sections"]["option"][key]["allowed"] = True
-                            data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
+                            data["sections"]["option"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives allowed - {evidence_text}"
                             data["sections"]["option"][key]["evidence"] = {
                                 "page": 1,
                                 "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -285,7 +272,7 @@ class AnalysisService:
                     for key in data["sections"]["future"]:
                         if key != "special_other_restrictions":
                             data["sections"]["future"][key]["allowed"] = False
-                            data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                            data["sections"]["future"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives uncertain - {evidence_text}"
                             data["sections"]["future"][key]["evidence"] = {
                                 "page": 1,
                                 "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
@@ -293,7 +280,7 @@ class AnalysisService:
                     for key in data["sections"]["option"]:
                         if key != "special_other_restrictions":
                             data["sections"]["option"][key]["allowed"] = False
-                            data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                            data["sections"]["option"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives uncertain - {evidence_text}"
                             data["sections"]["option"][key]["evidence"] = {
                                 "page": 1,
                                 "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
@@ -304,7 +291,7 @@ class AnalysisService:
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = False
-                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives error - {str(e)}"
+                        data["sections"]["future"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives error - {str(e)}"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
                             "text": f"Error processing derivatives: {str(e)}"
@@ -312,7 +299,7 @@ class AnalysisService:
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
                         data["sections"]["option"][key]["allowed"] = False
-                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives error - {str(e)}"
+                        data["sections"]["option"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives error - {str(e)}"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
                             "text": f"Error processing derivatives: {str(e)}"
@@ -328,7 +315,7 @@ class AnalysisService:
                     for key in data["sections"][section_name]:
                         if key != "special_other_restrictions":
                             data["sections"][section_name][key]["allowed"] = False
-                            data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): Analysis error - {str(e)}"
+                            data["sections"][section_name][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Analysis error - {str(e)}"
                             data["sections"][section_name][key]["evidence"] = {
                                 "page": 1,
                                 "text": f"Analysis failed: {str(e)}"
@@ -339,7 +326,7 @@ class AnalysisService:
         """LLM-based analysis with forensic tracing - returns (structured_data, raw_analysis)"""
         try:
             # Get LLM analysis with tracing
-            analysis = await self.llm_service.analyze_document_with_tracing(text, llm_provider.value, model, trace_id)
+            analysis = await self.llm_service.analyze_document_with_tracing(text, get_enum_value(llm_provider), model, trace_id)
             
             # Apply LLM results to data structure using helper function
             self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
@@ -354,7 +341,7 @@ class AnalysisService:
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = True
-                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
+                        data["sections"]["future"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives allowed - {evidence_text}"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -362,7 +349,7 @@ class AnalysisService:
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
                         data["sections"]["option"][key]["allowed"] = True
-                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives allowed - {evidence_text}"
+                        data["sections"]["option"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives allowed - {evidence_text}"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "LLM analysis indicates derivatives are permitted"
@@ -371,7 +358,7 @@ class AnalysisService:
                 for key in data["sections"]["future"]:
                     if key != "special_other_restrictions":
                         data["sections"]["future"][key]["allowed"] = False
-                        data["sections"]["future"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["future"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives uncertain - {evidence_text}"
                         data["sections"]["future"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
@@ -379,7 +366,7 @@ class AnalysisService:
                 for key in data["sections"]["option"]:
                     if key != "special_other_restrictions":
                         data["sections"]["option"][key]["allowed"] = False
-                        data["sections"]["option"][key]["note"] = f"LLM ({llm_provider.value}): Derivatives uncertain - {evidence_text}"
+                        data["sections"]["option"][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): Derivatives uncertain - {evidence_text}"
                         data["sections"]["option"][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
@@ -411,7 +398,7 @@ class AnalysisService:
                 for key in section_keys:
                     if key != "special_other_restrictions":
                         data["sections"][section_name][key]["allowed"] = True
-                        data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} allowed - {evidence_text}"
+                        data["sections"][section_name][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): {investment_type.title()} allowed - {evidence_text}"
                         data["sections"][section_name][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else f"LLM analysis indicates {investment_type} are permitted"
@@ -420,84 +407,66 @@ class AnalysisService:
                 for key in section_keys:
                     if key != "special_other_restrictions":
                         data["sections"][section_name][key]["allowed"] = False
-                        data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} uncertain - {evidence_text}"
+                        data["sections"][section_name][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): {investment_type.title()} uncertain - {evidence_text}"
                         data["sections"][section_name][key]["evidence"] = {
                             "page": 1,
                             "text": evidence_text if evidence_text else "Uncertain - no explicit statement found"
                         }
             # If decision is False or any other value, leave as default (False)
-            except Exception as e:
-                logger.error(f"Error applying LLM decision for {investment_type}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error applying LLM decision for {investment_type}: {e}", exc_info=True)
             # Set all items to uncertain on error
             for key in section_keys:
                 if key != "special_other_restrictions":
                     data["sections"][section_name][key]["allowed"] = False
-                    data["sections"][section_name][key]["note"] = f"LLM ({llm_provider.value}): {investment_type.title()} error - {str(e)}"
+                    data["sections"][section_name][key]["note"] = f"LLM ({get_enum_value(llm_provider)}): {investment_type.title()} error - {str(e)}"
                     data["sections"][section_name][key]["evidence"] = {
                         "page": 1,
                         "text": f"Error processing {investment_type}: {str(e)}"
                     }
 
-    def _validate_llm_response(self, llm_response: Dict[str, Any]) -> None:
-        """Validate LLM response before Excel creation"""
-        # Check for errors
+    def _validate_llm_response(self, llm_response: Dict[str, Any]) -> LLMResponse:
+        """Validate LLM response using Pydantic models"""
+        # Check for errors first
         if "error" in llm_response:
             raise ValueError(f"LLM failed: {llm_response['error']}")
         
-        # Check for required keys
-        required_keys = ["sector_rules", "country_rules", "instrument_rules"]
-        for key in required_keys:
-            if key not in llm_response:
-                raise ValueError(f"Missing key in LLM output: {key}")
-        
-        # Validate structure of each required key
-        for key in required_keys:
-            if not isinstance(llm_response[key], list):
-                raise ValueError(f"Invalid structure for {key}: expected list, got {type(llm_response[key])}")
-        
-        # Validate conflicts key (optional but should be list if present)
-        if "conflicts" in llm_response and not isinstance(llm_response["conflicts"], list):
-            raise ValueError(f"Invalid structure for conflicts: expected list, got {type(llm_response['conflicts'])}")
-        
-        # Validate individual rule structures
-        for key in required_keys:
-            for rule in llm_response[key]:
-                if not isinstance(rule, dict):
-                    raise ValueError(f"Invalid rule structure in {key}: expected dict, got {type(rule)}")
-                
-                required_rule_keys = ["sector" if key == "sector_rules" else "country" if key == "country_rules" else "instrument", "allowed", "reason"]
-                for rule_key in required_rule_keys:
-                    if rule_key not in rule:
-                        raise ValueError(f"Missing {rule_key} in rule: {rule}")
-                
-                # Validate allowed field
-                if not isinstance(rule["allowed"], bool):
-                    raise ValueError(f"Invalid 'allowed' value in {key}: expected bool, got {type(rule['allowed'])}")
-                
-                # Validate reason field
-                if not isinstance(rule["reason"], str):
-                    raise ValueError(f"Invalid 'reason' value in {key}: expected string, got {type(rule['reason'])}")
+        # Use Pydantic for automatic validation
+        try:
+            validated_response = LLMResponse.from_dict(llm_response)
+            logger.debug(f"✅ LLM response validated successfully with Pydantic")
+            return validated_response
+        except Exception as e:
+            # Provide helpful error message
+            error_msg = str(e)
+            logger.error(f"❌ LLM response validation failed: {error_msg}")
+            raise ValueError(f"Invalid LLM response structure: {error_msg}")
     
     def _convert_llm_response_to_ocrd_format(self, llm_response: Dict[str, Any], full_text: Optional[str] = None) -> Dict[str, Any]:
         """Convert LLM response to OCRD format for Excel export"""
-        # Debug: Print LLM response to help diagnose issues
-        sector_count = len(llm_response.get('sector_rules', []))
-        country_count = len(llm_response.get('country_rules', []))
-        instrument_count = len(llm_response.get('instrument_rules', []))
+        # Validate using Pydantic (returns LLMResponse object)
+        validated_response = self._validate_llm_response(llm_response)
+        
+        # Use validated response for type-safe access
+        sector_count = len(validated_response.sector_rules)
+        country_count = len(validated_response.country_rules)
+        instrument_count = len(validated_response.instrument_rules)
         
         logger.debug(f"LLM Response: sector_rules={sector_count}, "
               f"country_rules={country_count}, "
               f"instrument_rules={instrument_count}")
         
-        if llm_response.get("instrument_rules"):
+        if instrument_count > 0:
             logger.debug("First 3 instrument rules:")
-            for i, rule in enumerate(llm_response['instrument_rules'][:3]):
-                logger.debug(f"  [{i+1}] {rule}")
+            for i, rule in enumerate(validated_response.instrument_rules[:3]):
+                logger.debug(f"  [{i+1}] {rule.model_dump()}")
         else:
             logger.warning("instrument_rules is EMPTY!")
         
-        # Validate first
-        self._validate_llm_response(llm_response)
+        # Use validated response for type-safe access
+        sector_count = len(validated_response.sector_rules)
+        country_count = len(validated_response.country_rules)
+        instrument_count = len(validated_response.instrument_rules)
         
         # Create empty OCRD structure
         data = {"fund_id": "compliance_analysis", "as_of": None, "sections": {}, "notes": []}
@@ -507,13 +476,13 @@ class AnalysisService:
         data["notes"].append(debug_info)
         logger.debug(debug_info)
         
-        # Log actual instrument rules if any
+        # Log actual instrument rules if any (using validated response)
         if instrument_count > 0:
             logger.debug("Instrument rules details:")
-            for i, rule in enumerate(llm_response.get("instrument_rules", [])[:5]):
-                logger.debug(f"  [{i+1}] instrument='{rule.get('instrument', 'N/A')}', allowed={rule.get('allowed', 'N/A')}, reason='{rule.get('reason', 'N/A')[:100]}...'")
+            for i, rule in enumerate(validated_response.instrument_rules[:5]):
+                logger.debug(f"  [{i+1}] instrument='{rule.instrument}', allowed={rule.allowed}, reason='{rule.reason[:100]}...'")
                 data["notes"].append(
-                    f"[DEBUG] Rule {i+1}: '{rule.get('instrument', 'N/A')}' = {rule.get('allowed', 'N/A')}"
+                    f"[DEBUG] Rule {i+1}: '{rule.instrument}' = {rule.allowed}"
                 )
         
         # OCRD schema
@@ -543,11 +512,11 @@ class AnalysisService:
             if section in ("stock", "fund", "bond", "certificate", "deposit", "future", "option", "warrant", "commodity", "forex", "swap", "loan", "private_equity", "real_estate", "rights"):
                 data["sections"][section]["special_other_restrictions"] = []
         
-        # Apply sector rules
-        for rule in llm_response.get("sector_rules", []):
-            sector = rule["sector"].lower()
-            allowed = rule["allowed"]
-            reason = rule["reason"]
+        # Apply sector rules (using validated response)
+        for rule in validated_response.sector_rules:
+            sector = rule.sector.lower()
+            allowed = rule.allowed
+            reason = rule.reason
             
             # Map sectors to relevant instrument types
             sector_mapping = {
@@ -571,33 +540,37 @@ class AnalysisService:
                                 "text": reason
                             }
         
-        # Apply country rules
-        for rule in llm_response.get("country_rules", []):
-            country = rule["country"]
-            allowed = rule["allowed"]
-            reason = rule["reason"]
+        # Apply country rules (using validated response)
+        for rule in validated_response.country_rules:
+            country = rule.country
+            allowed = rule.allowed
+            reason = rule.reason
             
             # Add to notes
             data["notes"].append(f"Country rule: {country} - {'Allowed' if allowed else 'Prohibited'} - {reason}")
         
-        # Apply instrument rules using Excel mapping if available
+        # Apply instrument rules using Excel mapping if available (using validated response)
         processed_instruments = set()  # Track which instruments we've processed
-        instrument_rules = llm_response.get("instrument_rules", [])
+        instrument_rules = validated_response.instrument_rules
         
         if not instrument_rules:
-            logger.warning("No instrument_rules extracted from LLM! This is why allowed_count is 0.")
+            logger.warning("⚠️ No instrument_rules extracted from LLM! This is why allowed_count is 0.")
+            logger.warning("⚠️ Check if LLM is returning instrument_rules in the response")
             data["notes"].append("[WARNING] No instrument rules extracted from PDF. LLM may not have found any investment instruments mentioned.")
         else:
-            logger.debug(f"Processing {len(instrument_rules)} instrument rules from LLM")
-            allowed_count_in_rules = sum(1 for r in instrument_rules if r.get("allowed") is True)
-            logger.debug(f"{allowed_count_in_rules}/{len(instrument_rules)} rules have allowed=True")
+            logger.info(f"✅ Processing {len(instrument_rules)} instrument rules from LLM")
+            allowed_count_in_rules = sum(1 for r in instrument_rules if r.allowed is True)
+            logger.info(f"✅ {allowed_count_in_rules}/{len(instrument_rules)} rules have allowed=True")
+            # Log first few rules for debugging
+            for i, rule in enumerate(instrument_rules[:5]):
+                logger.info(f"  Rule {i+1}: '{rule.instrument}' = allowed={rule.allowed}")
         
         for rule in instrument_rules:
-            instrument = rule["instrument"].lower().strip()
-            allowed = rule["allowed"]
-            reason = rule["reason"]
+            instrument = rule.instrument.lower().strip()
+            allowed = rule.allowed
+            reason = rule.reason
             
-            logger.debug(f"Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
+            logger.info(f"🔍 Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
             
             # Check for negative logic if Excel mapping is available
             if self.excel_mapping:
@@ -874,9 +847,9 @@ class AnalysisService:
                         f"Could not determine instrument category. Reason: {reason}"
                     )
         
-        # Add conflicts to notes
-        for conflict in llm_response.get("conflicts", []):
-            data["notes"].append(f"Conflict: {conflict.get('category', 'Unknown')} - {conflict.get('detail', 'No details')}")
+        # Add conflicts to notes (using validated response)
+        for conflict in validated_response.conflicts:
+            data["notes"].append(f"Conflict: {conflict.category} - {conflict.detail}")
         
         # Final debug: Count how many instruments were actually set to allowed
         final_allowed_count = sum(
@@ -921,11 +894,11 @@ class AnalysisService:
         
         # Model confidence boost
         model_confidence_boost = {
-            "gpt-5": 20,
-            "gpt-4o": 15,
-            "gpt-4": 10,
-            "gpt-4o-mini": 5,
-            "gpt-3.5-turbo": 0
+            "gpt-4o": 20,  # Highest quality model
+            "gpt-4-turbo": 18,
+            "gpt-4": 15,
+            "gpt-4o-mini": 10,
+            "gpt-3.5-turbo": 5
         }
         base_score += model_confidence_boost.get(model.lower(), 5)
         
@@ -1000,21 +973,21 @@ class AnalysisService:
     def validate_and_preview_llm_response(self, llm_response: Dict[str, Any]) -> Dict[str, Any]:
         """Validate LLM response and return preview for debugging"""
         try:
-            # Validate the response
-            self._validate_llm_response(llm_response)
+            # Validate the response (returns LLMResponse object)
+            validated_response = self._validate_llm_response(llm_response)
             
-            # Return preview
+            # Return preview using validated response
             preview = {
                 "valid": True,
-                "sector_rules_count": len(llm_response.get("sector_rules", [])),
-                "country_rules_count": len(llm_response.get("country_rules", [])),
-                "instrument_rules_count": len(llm_response.get("instrument_rules", [])),
-                "conflicts_count": len(llm_response.get("conflicts", [])),
+                "sector_rules_count": len(validated_response.sector_rules),
+                "country_rules_count": len(validated_response.country_rules),
+                "instrument_rules_count": len(validated_response.instrument_rules),
+                "conflicts_count": len(validated_response.conflicts),
                 "preview": {
-                    "sector_rules": llm_response.get("sector_rules", [])[:3],  # First 3 rules
-                    "country_rules": llm_response.get("country_rules", [])[:3],
-                    "instrument_rules": llm_response.get("instrument_rules", [])[:3],
-                    "conflicts": llm_response.get("conflicts", [])[:3]
+                    "sector_rules": [r.model_dump() for r in validated_response.sector_rules[:3]],
+                    "country_rules": [r.model_dump() for r in validated_response.country_rules[:3]],
+                    "instrument_rules": [r.model_dump() for r in validated_response.instrument_rules[:3]],
+                    "conflicts": [c.model_dump() for c in validated_response.conflicts[:3]]
                 }
             }
             
