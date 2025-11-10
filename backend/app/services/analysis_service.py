@@ -124,6 +124,16 @@ class AnalysisService:
                 [doc for sublist in results["documents"] for doc in sublist]
             )
 
+            # --- DEBUG START ---
+            retrieved_chunks = [chunk for sublist in results["documents"] for chunk in sublist]
+            logger.info(f"[ANALYZE] fund_id={request.fund_id} method={get_enum_value(request.analysis_method)} provider={get_enum_value(request.llm_provider)} model={request.model}")
+            logger.info(f"[ANALYZE] retrieval: chunks={len(retrieved_chunks)}")
+            logger.info(f"[ANALYZE] combined_context_len={len(combined_context)}")
+            # Optional: peek first two chunk ids/scores if you have them
+            for i, ch in enumerate(retrieved_chunks[:2]):
+                logger.info(f"[ANALYZE] top{i+1} id={getattr(ch,'id',None)} score={getattr(ch,'score',None)}")
+            # --- DEBUG END ---
+
             # 6. Send to LLM
             llm_service = LLMService()
             llm_prompt = f"""
