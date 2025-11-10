@@ -158,9 +158,10 @@ export class AnalysisService {
     
     try {
       // Test Node.js backend only - this is sufficient for the app to work
+      // Increased timeout for Render free tier cold starts (can take 30+ seconds)
       const nodeResponse = await axios.get(`${API_BASE_URL}/api/health`, {
         headers: { 'X-Request-ID': requestId },
-        timeout: 5000
+        timeout: 30000 // 30 seconds to allow for Render cold start
       });
       const duration = Date.now() - startTime;
       logger.logResponse('GET', `${API_BASE_URL}/api/health`, nodeResponse.status, nodeResponse.data, duration, requestId);
