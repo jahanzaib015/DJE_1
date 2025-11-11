@@ -8,6 +8,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import re
+from difflib import get_close_matches
 from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -26,6 +27,7 @@ class ExcelMappingService:
         self.mapping_data: List[Dict] = []
         self.instrument_lookup: Dict[str, List[Dict]] = {}  # instrument -> list of matching entries
         self.asset_tree_lookup: Dict[str, Dict[str, List[Dict]]] = {}  # type1 -> type2 -> type3 -> entries
+        self.synonym_lookup: Dict[str, List[Dict]] = {}  # normalized synonym -> entries
         
         logger.info(f"🔧 Initializing ExcelMappingService with path: {excel_path}")
         
@@ -162,21 +164,71 @@ class ExcelMappingService:
             self.mapping_data = []
             self._build_lookup_indexes()
     
+    def _normalize_term(self, value: str) -> str:
+        """Normalize a text value for fuzzy matching"""
+        if not value:
+            return ""
+        value = value.lower().strip()
+        value = value.replace("_", " ").replace("-", " ")
+        value = re.sub(r"[^a-z0-9\s]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    def _add_synonym(self, synonym: str, entry: Dict) -> None:
+        """Helper to register a synonym mapping"""
+        synonym = self._normalize_term(synonym)
+        if not synonym or len(synonym) < 3:
+            return
+        if synonym not in self.synonym_lookup:
+            self.synonym_lookup[synonym] = []
+        if entry not in self.synonym_lookup[synonym]:
+            self.synonym_lookup[synonym].append(entry)
+
+    def _extract_candidate_synonyms(self, entry: Dict) -> List[str]:
+        """Generate potential synonym strings for an entry"""
+        candidates: List[str] = []
+        fields = [
+            entry.get('instrument_category', ''),
+            entry.get('hint_notice', ''),
+            entry.get('asset_tree_type1', ''),
+            entry.get('asset_tree_type2', ''),
+            entry.get('asset_tree_type3', ''),
+            entry.get('restriction', '')
+        ]
+        for field in fields:
+            if not field or field == 'nan':
+                continue
+            # split on typical separators and conjunctions
+            parts = re.split(r"[,/;]|\\band\\b|\\border\\b|\\bsowie\\b|\\n", field, flags=re.IGNORECASE)
+            for part in parts:
+                part = part.strip()
+                if part:
+                    candidates.append(part)
+                    # add simple plural/singular variants
+                    if part.endswith('s') and len(part) > 4:
+                        candidates.append(part[:-1])
+                    elif len(part) > 4:
+                        candidates.append(f"{part}s")
+        return candidates
+
     def _build_lookup_indexes(self) -> None:
         """Build fast lookup indexes for matching"""
         self.instrument_lookup = {}
         self.asset_tree_lookup = {}
-        
+        self.synonym_lookup = {}
+
         for entry in self.mapping_data:
             instrument = entry['instrument_category'].lower().strip()
-            
+
             # Build instrument lookup (handles variations)
             if instrument:
                 # Direct match
                 if instrument not in self.instrument_lookup:
                     self.instrument_lookup[instrument] = []
                 self.instrument_lookup[instrument].append(entry)
-                
+                # Register normalized synonym for the instrument itself
+                self._add_synonym(instrument, entry)
+
                 # Also index by words (for partial matching)
                 words = re.findall(r'\w+', instrument)
                 for word in words:
@@ -185,7 +237,12 @@ class ExcelMappingService:
                             self.instrument_lookup[word] = []
                         if entry not in self.instrument_lookup[word]:
                             self.instrument_lookup[word].append(entry)
-            
+                        self._add_synonym(word, entry)
+
+            # Add additional synonyms using other descriptive fields
+            for candidate in self._extract_candidate_synonyms(entry):
+                self._add_synonym(candidate, entry)
+
             # Build asset tree lookup
             type1 = entry['asset_tree_type1'].lower().strip()
             type2 = entry['asset_tree_type2'].lower().strip()
@@ -227,9 +284,10 @@ class ExcelMappingService:
         """
         extracted_term = extracted_term.lower().strip()
         matches = []
-        
+        normalized = self._normalize_term(extracted_term)
+
         logger.debug(f"🔍 Searching for matches for: '{extracted_term}' (lookup has {len(self.instrument_lookup)} entries)")
-        
+
         # Direct match
         if extracted_term in self.instrument_lookup:
             matches.extend(self.instrument_lookup[extracted_term])
@@ -260,7 +318,27 @@ class ExcelMappingService:
         
         if not matches:
             logger.warning(f"⚠️ No matches found for '{extracted_term}'. Available entries: {list(self.instrument_lookup.keys())[:10]}...")
-        
+
+            # Try normalized synonym lookup (semantic style)
+            if normalized and normalized in self.synonym_lookup:
+                for entry in self.synonym_lookup[normalized]:
+                    if entry not in matches:
+                        matches.append(entry)
+
+            # Fuzzy match against known synonyms if still nothing
+            if not matches and normalized:
+                synonym_keys = list(self.synonym_lookup.keys())
+                close = get_close_matches(normalized, synonym_keys, n=5, cutoff=0.75)
+                for key in close:
+                    for entry in self.synonym_lookup.get(key, []):
+                        if entry not in matches:
+                            matches.append(entry)
+                if close:
+                    logger.debug(f"✅ Fuzzy synonym match for '{extracted_term}' -> {close}")
+
+        if not matches and normalized:
+            logger.warning(f"⚠️ Still no matches after fuzzy search for '{extracted_term}' (normalized='{normalized}')")
+
         return matches
     
     def get_all_entries(self) -> List[Dict]:
