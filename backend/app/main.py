@@ -95,9 +95,20 @@ async def startup_event():
     
     logger.info("🚀 Starting service initialization...")
     
-    # Initialize AnalysisService
+    # Initialize AnalysisService with Excel mapping file
     try:
-        analysis_service = AnalysisService()
+        # Try to load Investment_Mapping.xlsx from root directory
+        import os
+        excel_mapping_path = None
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        investment_mapping_path = os.path.join(root_dir, "Investment_Mapping.xlsx")
+        if os.path.exists(investment_mapping_path):
+            excel_mapping_path = investment_mapping_path
+            logger.info(f"📊 Found Investment_Mapping.xlsx at: {investment_mapping_path}")
+        else:
+            logger.info("ℹ️ Investment_Mapping.xlsx not found in root, using embedded mapping")
+        
+        analysis_service = AnalysisService(excel_mapping_path=excel_mapping_path)
         logger.info("✅ AnalysisService initialized successfully")
     except Exception as e:
         logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
@@ -744,6 +755,34 @@ async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Negation retrieval failed: {str(e)}")
+
+@app.get("/debug/rag")
+async def debug_rag(fund_id: str = "5800", k: int = 5):
+    """Quick debug endpoint to view chunks without running full analysis"""
+    try:
+        # Use fund_id as doc_id and a generic query for investment rules
+        query = "investment rules allowed restricted sectors countries instruments"
+        doc_id = fund_id
+        vectordb_dir = "/tmp/chroma"
+        
+        chunks = retrieve_rules(query, doc_id, k, vectordb_dir)
+        
+        return {
+            "fund_id": fund_id,
+            "count": len(chunks),
+            "previews": [c.get("text", str(c))[:300] for c in chunks],
+            "chunks": [
+                {
+                    "id": c.get("id", None),
+                    "score": c.get("distance", None),  # distance is the relevance score (lower is better)
+                    "text_preview": c.get("text", str(c))[:300],
+                    "meta": c.get("meta", {})
+                }
+                for c in chunks
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Debug RAG retrieval failed: {str(e)}")
 
 # Mount static files
 import os

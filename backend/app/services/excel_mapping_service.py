@@ -96,7 +96,11 @@ class ExcelMappingService:
             # Build lookup indexes
             self._build_lookup_indexes()
             
-            logger.info(f"Loaded {len(self.mapping_data)} entries from Excel file: {excel_path}")
+            logger.info(f"✅ Loaded {len(self.mapping_data)} entries from Excel file: {excel_path}")
+            logger.info(f"📊 Built lookup index with {len(self.instrument_lookup)} instrument keys")
+            # Log sample of instrument names for debugging
+            sample_keys = list(self.instrument_lookup.keys())[:10]
+            logger.info(f"📋 Sample instrument names in lookup: {sample_keys}")
             
         except Exception as e:
             logger.error(f"Error loading Excel file: {e}", exc_info=True)
@@ -185,26 +189,38 @@ class ExcelMappingService:
         extracted_term = extracted_term.lower().strip()
         matches = []
         
+        logger.debug(f"🔍 Searching for matches for: '{extracted_term}' (lookup has {len(self.instrument_lookup)} entries)")
+        
         # Direct match
         if extracted_term in self.instrument_lookup:
             matches.extend(self.instrument_lookup[extracted_term])
+            logger.debug(f"✅ Direct match found: {len(matches)} entries")
         
         # Partial match - check if extracted term contains or is contained in mapping terms
-        for instrument, entries in self.instrument_lookup.items():
-            if instrument in extracted_term or extracted_term in instrument:
-                for entry in entries:
-                    if entry not in matches:
-                        matches.append(entry)
+        if not matches:
+            for instrument, entries in self.instrument_lookup.items():
+                if instrument in extracted_term or extracted_term in instrument:
+                    for entry in entries:
+                        if entry not in matches:
+                            matches.append(entry)
+            if matches:
+                logger.debug(f"✅ Partial match found: {len(matches)} entries")
         
         # Word-based matching (for cases like "Pfandbriefe" matching "Pfandbrief")
-        extracted_words = set(re.findall(r'\w+', extracted_term))
-        for instrument, entries in self.instrument_lookup.items():
-            instrument_words = set(re.findall(r'\w+', instrument))
-            # If significant overlap in words
-            if len(extracted_words & instrument_words) >= min(2, len(extracted_words), len(instrument_words)):
-                for entry in entries:
-                    if entry not in matches:
-                        matches.append(entry)
+        if not matches:
+            extracted_words = set(re.findall(r'\w+', extracted_term))
+            for instrument, entries in self.instrument_lookup.items():
+                instrument_words = set(re.findall(r'\w+', instrument))
+                # If significant overlap in words
+                if len(extracted_words & instrument_words) >= min(2, len(extracted_words), len(instrument_words)):
+                    for entry in entries:
+                        if entry not in matches:
+                            matches.append(entry)
+            if matches:
+                logger.debug(f"✅ Word-based match found: {len(matches)} entries")
+        
+        if not matches:
+            logger.warning(f"⚠️ No matches found for '{extracted_term}'. Available entries: {list(self.instrument_lookup.keys())[:10]}...")
         
         return matches
     
@@ -316,10 +332,10 @@ class ExcelMappingService:
                     allowed_display = '✓'
                     processed_count += 1
                 elif allowed_status is False:
-                    allowed_display = ''
+                    allowed_display = '✗'  # Show X for explicitly prohibited
                     processed_count += 1
                 else:
-                    allowed_display = ''  # Empty if not processed
+                    allowed_display = ''  # Empty if not found or uncertain
                 
                 df_data.append({
                     'Instrument/Category': entry['instrument_category'],
@@ -374,6 +390,329 @@ class ExcelMappingService:
             
         except Exception as e:
             raise Exception(f"Failed to export Excel: {str(e)}")
+    
+    async def search_document_with_llm(self, document_text: str, llm_service, llm_provider: str, model: str) -> Dict:
+        """
+        Search document for ALL Excel entries (Column A terms) and use LLM to determine if allowed/prohibited.
+        For each term found, extracts context and asks LLM to determine if it's allowed or not.
+        
+        Args:
+            document_text: Full text of the document to search
+            llm_service: LLMService instance for analysis
+            llm_provider: LLM provider name
+            model: Model name to use
+        
+        Returns:
+            Dictionary with statistics about matches found
+        """
+        document_lower = document_text.lower()
+        matches_found = 0
+        allowed_found = 0
+        prohibited_found = 0
+        
+        logger.info(f"🔍 Searching document for {len(self.mapping_data)} Excel entries using LLM analysis...")
+        
+        for entry in self.mapping_data:
+            instrument_name = entry['instrument_category'].strip()
+            if not instrument_name or instrument_name == 'nan':
+                continue
+            
+            # Search for instrument name in document (case-insensitive)
+            instrument_lower = instrument_name.lower()
+            instrument_words = set(re.findall(r'\w+', instrument_lower))
+            
+            # Find all positions where instrument name appears
+            found_positions = []
+            
+            # First try exact match
+            start_pos = 0
+            while True:
+                pos = document_lower.find(instrument_lower, start_pos)
+                if pos == -1:
+                    break
+                found_positions.append(pos)
+                start_pos = pos + 1
+            
+            # If no exact match, try word-based matching
+            if not found_positions and instrument_words:
+                for word in instrument_words:
+                    if len(word) >= 4:  # Only search for significant words (4+ chars)
+                        word_positions = []
+                        start = 0
+                        while True:
+                            pos = document_lower.find(word, start)
+                            if pos == -1:
+                                break
+                            word_positions.append(pos)
+                            start = pos + 1
+                        
+                        # Check if other words are nearby
+                        for wp in word_positions:
+                            nearby_words = 0
+                            for other_word in instrument_words:
+                                if other_word != word and len(other_word) >= 4:
+                                    check_start = max(0, wp - 50)
+                                    check_end = min(len(document_lower), wp + len(word) + 50)
+                                    if other_word in document_lower[check_start:check_end]:
+                                        nearby_words += 1
+                            
+                            if nearby_words > 0 or len(instrument_words) == 1:
+                                found_positions.append(wp)
+                                break
+                        
+                        if found_positions:
+                            break
+            
+            if found_positions:
+                matches_found += 1
+                
+                # Extract context around the first occurrence (use larger context for LLM)
+                pos = found_positions[0]
+                context_start = max(0, pos - 500)
+                context_end = min(len(document_text), pos + len(instrument_name) + 500)
+                context = document_text[context_start:context_end]
+                
+                # Use LLM to analyze if this term is allowed or prohibited
+                try:
+                    import json
+                    
+                    llm_prompt = f"""You are analyzing an investment policy document. The term "{instrument_name}" appears in the context below.
+
+Determine if "{instrument_name}" is ALLOWED or PROHIBITED based on the context.
+
+Context:
+{context}
+
+Respond with ONLY a JSON object (no other text):
+{{
+  "allowed": true or false,
+  "reason": "brief explanation"
+}}
+
+Rules:
+- If context says "permitted", "allowed", "authorized", "may invest", "can invest" → "allowed": true
+- If context says "prohibited", "forbidden", "not allowed", "restricted", "excluded" → "allowed": false
+- If context is unclear or just mentions the term without permission/restriction → "allowed": false"""
+                    
+                    # Call LLM to analyze using analyze_text method
+                    llm_response = await llm_service.analyze_text(llm_prompt)
+                    
+                    # Parse LLM response
+                    if isinstance(llm_response, dict):
+                        if "error" in llm_response:
+                            error_msg = llm_response.get("error", "Unknown LLM error")
+                            logger.warning(f"LLM error for '{instrument_name}': {error_msg}")
+                            entry['allowed'] = None
+                            entry['reason'] = f"LLM error: {error_msg}"
+                        elif "allowed" in llm_response:
+                            # Direct response with allowed key
+                            allowed = bool(llm_response.get("allowed", False))
+                            reason = llm_response.get("reason", "LLM analysis")
+                            entry['allowed'] = allowed
+                            entry['reason'] = f"LLM: {reason}"
+                            
+                            if allowed:
+                                allowed_found += 1
+                                logger.debug(f"✅ LLM: '{instrument_name}' = ALLOWED")
+                            else:
+                                prohibited_found += 1
+                                logger.debug(f"❌ LLM: '{instrument_name}' = PROHIBITED")
+                        else:
+                            # Try to extract JSON from response text
+                            response_text = json.dumps(llm_response) if not isinstance(llm_response, str) else llm_response
+                            json_start = response_text.find('{')
+                            json_end = response_text.rfind('}') + 1
+                            if json_start != -1 and json_end > json_start:
+                                try:
+                                    json_str = response_text[json_start:json_end]
+                                    parsed = json.loads(json_str)
+                                    allowed = bool(parsed.get("allowed", False))
+                                    reason = parsed.get("reason", "LLM analysis")
+                                    entry['allowed'] = allowed
+                                    entry['reason'] = f"LLM: {reason}"
+                                    
+                                    if allowed:
+                                        allowed_found += 1
+                                    else:
+                                        prohibited_found += 1
+                                except json.JSONDecodeError:
+                                    entry['allowed'] = None
+                                    entry['reason'] = "LLM response JSON parse failed"
+                            else:
+                                entry['allowed'] = None
+                                entry['reason'] = "LLM response format invalid"
+                    else:
+                        entry['allowed'] = None
+                        entry['reason'] = "LLM returned invalid response type"
+                        
+                except Exception as e:
+                    logger.error(f"Error calling LLM for '{instrument_name}': {e}", exc_info=True)
+                    entry['allowed'] = None
+                    entry['reason'] = f"LLM error: {str(e)}"
+            else:
+                # Not found in document - leave as None (will show as empty in Excel)
+                entry['allowed'] = None
+                entry['reason'] = "Not found in document"
+        
+        logger.info(f"✅ LLM analysis complete: {matches_found} entries found, {allowed_found} allowed, {prohibited_found} prohibited")
+        
+        return {
+            'total_entries': len(self.mapping_data),
+            'matches_found': matches_found,
+            'allowed_found': allowed_found,
+            'prohibited_found': prohibited_found,
+            'not_found': len(self.mapping_data) - matches_found
+        }
+    
+    def search_document_for_all_entries(self, document_text: str) -> Dict:
+        """
+        Search document text for ALL Excel entries and mark them as allowed/permitted.
+        This searches the document directly for each instrument name and checks context.
+        
+        Args:
+            document_text: Full text of the document to search
+            
+        Returns:
+            Dictionary with statistics about matches found
+        """
+        document_lower = document_text.lower()
+        matches_found = 0
+        allowed_found = 0
+        
+        logger.info(f"🔍 Searching document for {len(self.mapping_data)} Excel entries...")
+        
+        for entry in self.mapping_data:
+            instrument_name = entry['instrument_category'].strip()
+            if not instrument_name or instrument_name == 'nan':
+                continue
+            
+            # Search for instrument name in document (case-insensitive)
+            instrument_lower = instrument_name.lower()
+            instrument_words = set(re.findall(r'\w+', instrument_lower))
+            
+            # Find all positions where instrument name appears (exact or word-based)
+            found_positions = []
+            
+            # First try exact match
+            start_pos = 0
+            while True:
+                pos = document_lower.find(instrument_lower, start_pos)
+                if pos == -1:
+                    break
+                found_positions.append(pos)
+                start_pos = pos + 1
+            
+            # If no exact match, try word-based matching
+            if not found_positions and instrument_words:
+                # Find positions where key words appear close together
+                for word in instrument_words:
+                    if len(word) >= 4:  # Only search for significant words (4+ chars)
+                        word_positions = []
+                        start = 0
+                        while True:
+                            pos = document_lower.find(word, start)
+                            if pos == -1:
+                                break
+                            word_positions.append(pos)
+                            start = pos + 1
+                        
+                        # If we found this word, check if other words are nearby (within 50 chars)
+                        for wp in word_positions:
+                            # Check if other instrument words appear nearby
+                            nearby_words = 0
+                            for other_word in instrument_words:
+                                if other_word != word and len(other_word) >= 4:
+                                    # Check if other word appears within 50 chars
+                                    check_start = max(0, wp - 50)
+                                    check_end = min(len(document_lower), wp + len(word) + 50)
+                                    if other_word in document_lower[check_start:check_end]:
+                                        nearby_words += 1
+                            
+                            # If at least one other word is nearby, consider it a match
+                            if nearby_words > 0 or len(instrument_words) == 1:
+                                found_positions.append(wp)
+                                break
+                        
+                        if found_positions:
+                            logger.debug(f"Found '{instrument_name}' via word-based matching (word: '{word}')")
+                            break
+            
+            if found_positions:
+                matches_found += 1
+                
+                # Find all occurrences and check context for "allowed/permitted"
+                found_allowed = False
+                found_prohibited = False
+                evidence_text = ""
+                
+                # Check context for each found position
+                for pos in found_positions:
+                    
+                    # Extract context around the match (200 chars before and after)
+                    # Use instrument_lower length for exact matches, or estimate for word matches
+                    match_length = len(instrument_lower) if pos != -1 else 20
+                    context_start = max(0, pos - 200)
+                    context_end = min(len(document_lower), pos + match_length + 200)
+                    context = document_lower[context_start:context_end]
+                    
+                    # Check for allowed/permitted keywords in context
+                    allowed_keywords = ['allowed', 'permitted', 'authorized', 'approved', 'may invest', 'can invest']
+                    prohibited_keywords = ['prohibited', 'forbidden', 'not allowed', 'restricted', 'excluded', 'may not invest', 'cannot invest']
+                    
+                    # Check if any allowed keyword appears before prohibited keywords
+                    allowed_positions = [context.find(kw) for kw in allowed_keywords if context.find(kw) != -1]
+                    prohibited_positions = [context.find(kw) for kw in prohibited_keywords if context.find(kw) != -1]
+                    
+                    # If allowed keywords found and no prohibited keywords, or allowed is closer
+                    if allowed_positions:
+                        if not prohibited_positions or min(allowed_positions) < min(prohibited_positions):
+                            found_allowed = True
+                            # Extract the sentence or phrase containing the match
+                            sentence_start = max(0, context.find('.', max(0, pos - context_start - 100)))
+                            sentence_end = context.find('.', pos - context_start + len(instrument_lower) + 100)
+                            if sentence_end == -1:
+                                sentence_end = len(context)
+                            evidence_text = context[sentence_start:sentence_end].strip()
+                            break
+                    
+                    # If prohibited keywords found
+                    if prohibited_positions:
+                        found_prohibited = True
+                        sentence_start = max(0, context.find('.', max(0, pos - context_start - 100)))
+                        sentence_end = context.find('.', pos - context_start + len(instrument_lower) + 100)
+                        if sentence_end == -1:
+                            sentence_end = len(context)
+                        evidence_text = context[sentence_start:sentence_end].strip()
+                        break  # Found prohibited, no need to check more positions
+                
+                # Mark entry based on what was found
+                if found_allowed:
+                    entry['allowed'] = True
+                    entry['reason'] = f"Found in document with 'allowed/permitted' context: {evidence_text[:200]}"
+                    allowed_found += 1
+                    logger.debug(f"✅ Found '{instrument_name}' as ALLOWED in document")
+                elif found_prohibited:
+                    entry['allowed'] = False
+                    entry['reason'] = f"Found in document with 'prohibited/restricted' context: {evidence_text[:200]}"
+                    logger.debug(f"❌ Found '{instrument_name}' as PROHIBITED in document")
+                else:
+                    # Found in document but unclear context - mark as found but uncertain
+                    entry['allowed'] = None  # Keep as None to indicate found but uncertain
+                    entry['reason'] = f"Found in document but context unclear: {evidence_text[:200] if evidence_text else 'No clear permission/restriction found'}"
+                    logger.debug(f"⚠️ Found '{instrument_name}' in document but context unclear")
+            else:
+                # Not found in document - leave as None (will show as empty in Excel)
+                entry['allowed'] = None
+                entry['reason'] = "Not found in document"
+        
+        logger.info(f"✅ Document search complete: {matches_found} entries found, {allowed_found} marked as allowed")
+        
+        return {
+            'total_entries': len(self.mapping_data),
+            'matches_found': matches_found,
+            'allowed_found': allowed_found,
+            'not_found': len(self.mapping_data) - matches_found
+        }
     
     def get_statistics(self) -> Dict:
         """Get statistics about the mapping data"""

@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from typing import Dict, Any, Optional, Tuple
@@ -56,6 +57,17 @@ class AnalysisService:
         # Create empty OCRD structure
         data = self._create_empty_ocrd_json(fund_id)
         
+        # NEW: Search document text for ALL Excel entries (Column A) and use LLM to determine allowed/prohibited
+        if self.excel_mapping:
+            logger.info("🔍 Step 1: Searching document for all Excel entries (Column A terms) using LLM analysis...")
+            search_stats = await self.excel_mapping.search_document_with_llm(
+                text, 
+                self.llm_service, 
+                get_enum_value(llm_provider), 
+                model
+            )
+            logger.info(f"✅ LLM search complete: {search_stats['matches_found']} entries found, {search_stats['allowed_found']} allowed, {search_stats['prohibited_found']} prohibited")
+        
         # ONLY USE LLM ANALYSIS - No keyword analysis or fallback
         # All analysis methods use LLM only
         if trace_id:
@@ -87,6 +99,7 @@ class AnalysisService:
             "evidence_coverage": evidence_coverage,
             "confidence_score": confidence_score,
             "sections": result["sections"],
+            "notes": result.get("notes", []),  # Include debug notes in response
             "processing_time": round(processing_time, 2),
             "created_at": datetime.now().isoformat()
         }
@@ -120,19 +133,28 @@ class AnalysisService:
             trace_handler.log_retrieval(results["documents"])
 
             # 5. Format retrieved context for LLM
-            combined_context = "\n\n".join(
-                [doc for sublist in results["documents"] for doc in sublist]
+            retrieved_chunks = [chunk for sublist in results["documents"] for chunk in sublist]
+            combined_context = "\n\n".join(getattr(c, "text", str(c)) for c in retrieved_chunks)
+
+            # ===== DEBUG: CHUNK COUNTS & CONTEXT LENGTH =====
+            logger.info(
+                "[RAG] job=%s fund=%s chunks=%d combined_context_len=%d",
+                trace_id, request.fund_id, len(retrieved_chunks), len(combined_context)
             )
 
-            # --- DEBUG START ---
-            retrieved_chunks = [chunk for sublist in results["documents"] for chunk in sublist]
-            logger.info(f"[ANALYZE] fund_id={request.fund_id} method={get_enum_value(request.analysis_method)} provider={get_enum_value(request.llm_provider)} model={request.model}")
-            logger.info(f"[ANALYZE] retrieval: chunks={len(retrieved_chunks)}")
-            logger.info(f"[ANALYZE] combined_context_len={len(combined_context)}")
-            # Optional: peek first two chunk ids/scores if you have them
+            # optional: peek at the first 2 chunks
             for i, ch in enumerate(retrieved_chunks[:2]):
-                logger.info(f"[ANALYZE] top{i+1} id={getattr(ch,'id',None)} score={getattr(ch,'score',None)}")
-            # --- DEBUG END ---
+                preview = getattr(ch, "text", "")[:200].replace("\n", " ")
+                logger.info("[RAG] job=%s top%d score=%s preview=%r",
+                            trace_id, i+1, getattr(ch, "score", None), preview)
+
+            # also write the actual prompt context to traces so you can open it
+            trace_dir = trace_handler.get_trace_dir(trace_id)
+            os.makedirs(trace_dir, exist_ok=True)
+            context_file_path = os.path.join(trace_dir, f"{trace_id}_context.txt")
+            with open(context_file_path, 'w', encoding='utf-8') as f:
+                f.write(combined_context)
+            # ================================================
 
             # 6. Send to LLM
             llm_service = LLMService()
@@ -236,8 +258,28 @@ class AnalysisService:
     async def _analyze_with_llm(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """LLM-based analysis - returns (structured_data, raw_analysis)"""
         try:
+            logger.info(f"🔍 Starting LLM analysis with {get_enum_value(llm_provider)}/{model}, text length: {len(text)}")
+            
             # Get LLM analysis
             analysis = await self.llm_service.analyze_document(text, get_enum_value(llm_provider), model, trace_id)
+            
+            # Log what LLM returned
+            if isinstance(analysis, dict):
+                instrument_count = len(analysis.get("instrument_rules", []))
+                sector_count = len(analysis.get("sector_rules", []))
+                country_count = len(analysis.get("country_rules", []))
+                logger.info(f"📊 LLM returned: {instrument_count} instrument rules, {sector_count} sector rules, {country_count} country rules")
+                
+                if instrument_count > 0:
+                    # Log first few instrument rules
+                    for i, rule in enumerate(analysis.get("instrument_rules", [])[:3]):
+                        allowed_val = rule.get("allowed") if isinstance(rule, dict) else getattr(rule, "allowed", None)
+                        instrument_name = rule.get("instrument") if isinstance(rule, dict) else getattr(rule, "instrument", "unknown")
+                        logger.info(f"  Instrument rule {i+1}: '{instrument_name}' = allowed={allowed_val}")
+                else:
+                    logger.warning("⚠️ LLM returned ZERO instrument rules! This is the root cause of 0 allowed instruments.")
+            else:
+                logger.error(f"❌ LLM returned non-dict response: {type(analysis)}")
             
             # Validate analysis response
             if not isinstance(analysis, dict):
@@ -245,7 +287,9 @@ class AnalysisService:
             
             # Convert LLM response using Excel mapping (includes negative logic detection)
             # Preserve original fund_id from data
+            logger.info("🔄 Converting LLM response to OCRD format...")
             converted_data = self._convert_llm_response_to_ocrd_format(analysis, full_text=text)
+            logger.info(f"✅ Conversion complete. Notes count: {len(converted_data.get('notes', []))}")
             # Merge with original data structure to preserve fund_id
             converted_data["fund_id"] = data.get("fund_id", "compliance_analysis")
             data = converted_data
@@ -335,13 +379,46 @@ class AnalysisService:
     async def _analyze_with_llm_traced(self, data: Dict[str, Any], text: str, llm_provider: LLMProvider, model: str, trace_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """LLM-based analysis with forensic tracing - returns (structured_data, raw_analysis)"""
         try:
+            logger.info(f"🔍 Starting LLM analysis (TRACED) with {get_enum_value(llm_provider)}/{model}, text length: {len(text)}")
+            
             # Get LLM analysis with tracing
             analysis = await self.llm_service.analyze_document_with_tracing(text, get_enum_value(llm_provider), model, trace_id)
             
+            # Log what LLM returned
+            if isinstance(analysis, dict):
+                instrument_count = len(analysis.get("instrument_rules", []))
+                sector_count = len(analysis.get("sector_rules", []))
+                country_count = len(analysis.get("country_rules", []))
+                logger.info(f"📊 LLM returned (TRACED): {instrument_count} instrument rules, {sector_count} sector rules, {country_count} country rules")
+                
+                if instrument_count > 0:
+                    # Log first few instrument rules
+                    for i, rule in enumerate(analysis.get("instrument_rules", [])[:3]):
+                        allowed_val = rule.get("allowed") if isinstance(rule, dict) else getattr(rule, "allowed", None)
+                        instrument_name = rule.get("instrument") if isinstance(rule, dict) else getattr(rule, "instrument", "unknown")
+                        logger.info(f"  Instrument rule {i+1}: '{instrument_name}' = allowed={allowed_val}")
+                else:
+                    logger.warning("⚠️ LLM returned ZERO instrument rules! This is the root cause of 0 allowed instruments.")
+            
+            # Validate analysis response
+            if not isinstance(analysis, dict):
+                raise Exception(f"Invalid analysis response format: {type(analysis)}")
+            
+            # Convert LLM response using Excel mapping (includes negative logic detection)
+            # This is the SAME conversion method used in _analyze_with_llm
+            logger.info("🔄 Converting LLM response to OCRD format (TRACED)...")
+            converted_data = self._convert_llm_response_to_ocrd_format(analysis, full_text=text)
+            logger.info(f"✅ Conversion complete (TRACED). Notes count: {len(converted_data.get('notes', []))}")
+            
+            # Merge with original data structure to preserve fund_id
+            converted_data["fund_id"] = data.get("fund_id", "compliance_analysis")
+            data = converted_data
+            
+            # Legacy code below - keeping for backward compatibility but not used if Excel mapping is active
             # Apply LLM results to data structure using helper function
-            self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
-            self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
-            self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "bonds", list(data["sections"]["bond"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "stocks", list(data["sections"]["stock"].keys()))
+            # self._apply_llm_decision(data, analysis, llm_provider, "funds", list(data["sections"]["fund"].keys()))
             
             # Handle derivatives for both future and option sections
             derivatives_decision = analysis.get("derivatives", {}).get("allowed")
@@ -462,16 +539,16 @@ class AnalysisService:
         country_count = len(validated_response.country_rules)
         instrument_count = len(validated_response.instrument_rules)
         
-        logger.debug(f"LLM Response: sector_rules={sector_count}, "
+        logger.info(f"📊 LLM Response validated: sector_rules={sector_count}, "
               f"country_rules={country_count}, "
               f"instrument_rules={instrument_count}")
         
         if instrument_count > 0:
-            logger.debug("First 3 instrument rules:")
+            logger.info("📋 First 3 instrument rules from LLM:")
             for i, rule in enumerate(validated_response.instrument_rules[:3]):
-                logger.debug(f"  [{i+1}] {rule.model_dump()}")
+                logger.info(f"  [{i+1}] instrument='{rule.instrument}', allowed={rule.allowed}, reason='{rule.reason[:80]}...'")
         else:
-            logger.warning("instrument_rules is EMPTY!")
+            logger.warning("⚠️ instrument_rules is EMPTY! LLM didn't extract any instrument rules.")
         
         # Use validated response for type-safe access
         sector_count = len(validated_response.sector_rules)
@@ -488,9 +565,9 @@ class AnalysisService:
         
         # Log actual instrument rules if any (using validated response)
         if instrument_count > 0:
-            logger.debug("Instrument rules details:")
+            logger.info("📋 Processing instrument rules details:")
             for i, rule in enumerate(validated_response.instrument_rules[:5]):
-                logger.debug(f"  [{i+1}] instrument='{rule.instrument}', allowed={rule.allowed}, reason='{rule.reason[:100]}...'")
+                logger.info(f"  [{i+1}] instrument='{rule.instrument}', allowed={rule.allowed}, reason='{rule.reason[:100]}...'")
                 data["notes"].append(
                     f"[DEBUG] Rule {i+1}: '{rule.instrument}' = {rule.allowed}"
                 )
@@ -583,18 +660,31 @@ class AnalysisService:
             logger.info(f"🔍 Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
             
             # Check for negative logic if Excel mapping is available
+            excel_mapping_succeeded = False  # Track if Excel mapping actually updated OCRD structure
             if self.excel_mapping:
                 # Use Excel mapping to find matching entries
                 # Use full text context if available for better negative logic detection
                 context_for_matching = full_text if full_text else reason
                 matching_entries = self.excel_mapping.find_matching_entries(instrument, context=context_for_matching)
                 
-                # Check for negative logic in the full text context (better detection)
-                is_negative, neg_explanation = self.excel_mapping.detect_negative_logic(context_for_matching, instrument)
-                if is_negative:
-                    allowed = not allowed  # Flip the logic
-                    reason = f"{reason} [Negative logic detected: {neg_explanation}]"
-                    logger.info(f"EXCEL MAPPING: Negative logic detected for '{instrument}': {neg_explanation}")
+                logger.info(f"🔍 Excel mapping for '{instrument}': found {len(matching_entries)} entries")
+                if matching_entries:
+                    for i, entry in enumerate(matching_entries[:3]):
+                        logger.info(f"  Match {i+1}: '{entry.get('instrument_category', 'unknown')}' → Type1={entry.get('asset_tree_type1')}, Type2={entry.get('asset_tree_type2')}")
+                else:
+                    # Log what's available in the lookup for debugging
+                    if self.excel_mapping and hasattr(self.excel_mapping, 'instrument_lookup'):
+                        sample_keys = list(self.excel_mapping.instrument_lookup.keys())[:5]
+                        logger.warning(f"⚠️ No matches found. Sample available keys: {sample_keys}")
+                
+                # Only check negative logic if we have matching entries (more reliable)
+                if matching_entries:
+                    # Check for negative logic in the full text context (better detection)
+                    is_negative, neg_explanation = self.excel_mapping.detect_negative_logic(context_for_matching, instrument)
+                    if is_negative:
+                        allowed = not allowed  # Flip the logic
+                        reason = f"{reason} [Negative logic detected: {neg_explanation}]"
+                        logger.info(f"EXCEL MAPPING: Negative logic detected for '{instrument}': {neg_explanation}")
                 
                 # Update Excel mapping entries AND populate OCRD structure using Asset Tree
                 for entry in matching_entries:
@@ -602,13 +692,15 @@ class AnalysisService:
                     logger.debug(f"EXCEL MAPPING: Updated entry '{entry['instrument_category']}' (row {entry['row_id']}) to allowed={allowed}")
                     
                     # Use Asset Tree to populate OCRD structure directly
-                    type1 = entry['asset_tree_type1'].lower().strip()
-                    type2 = entry['asset_tree_type2'].lower().strip()
-                    type3 = entry['asset_tree_type3'].lower().strip()
+                    type1 = entry.get('asset_tree_type1', '').lower().strip() if entry.get('asset_tree_type1') else None
+                    type2 = entry.get('asset_tree_type2', '').lower().strip() if entry.get('asset_tree_type2') else None
+                    type3 = entry.get('asset_tree_type3', '').lower().strip() if entry.get('asset_tree_type3') else None
                     
                     if type1 and type1 in data["sections"]:
                         # Map type2 to specific instrument names in OCRD schema
+                        # This mapping is generated from Investment_Mapping.xlsx
                         type2_to_key = {
+                            # Bonds
                             "plain vanilla bond": "plain_vanilla_bond",
                             "covered bond": "covered_bond",
                             "asset backed security": "asset_backed_security",
@@ -618,55 +710,127 @@ class AnalysisService:
                             "convertible bond": "convertible_bond_regular",
                             "commercial paper": "commercial_paper",
                             "inflation linked": "inflation_linked",
+                            "promissory note": "promissory_note",
+                            "credit linked note": "credit_linked_note",
+                            "warrant linked bond": "warrant_linked_bond",
+                            "participation paper": "participation_paper",
+                            "reverse convertible": "reverse_convertible",
+                            # Stocks
                             "common stock": "common_stock",
                             "preferred stock": "preferred_stock",
                             "depositary receipt": "depositary_receipt",
+                            "right": "right",
+                            "partizipationsschein": "partizipationsschein",
+                            "reit": "reit",
+                            # Funds
                             "equity fund": "equity_fund",
                             "fixed income fund": "fixed_income_fund",
                             "moneymarket fund": "moneymarket_fund",
                             "real estate fund": "real_estate_fund",
-                            # Add more mappings as needed
+                            "real estate": "real_estate_fund",
+                            "alternative investment fund": "alternative_investment_fund",
+                            "private equity fund": "private_equity_fund",
+                            # Deposits
+                            "cash": "cash",
+                            "call money": "call_money",
+                            "time deposit": "time_deposit",
+                            # Futures
+                            "bond future": "bond_future",
+                            "index future": "index_future",
+                            "currency future": "currency_future",
+                            # Options
+                            "currency option": "currency_option",
+                            "index option": "index_option",
+                            "stock option": "stock_option",
+                            # Forex
+                            "forex outright": "forex_outright",
+                            # Commodities
+                            "precious metal": "precious_metal",
                         }
                         
                         # Try to find matching key in section
                         section = data["sections"][type1]
-                        matched_key = None
+                        matched_keys = []  # Can match multiple keys (e.g., from Type3 comma-separated values)
                         
                         # First try type2 mapping
                         if type2 and type2 in type2_to_key:
                             key = type2_to_key[type2]
                             if key in section:
-                                matched_key = key
+                                matched_keys.append(key)
                         
-                        # If no match, try fuzzy matching on type2
-                        if not matched_key and type2:
+                        # Handle Type3 - can contain multiple comma-separated instrument names
+                        if type3 and type3 != 'nan':
+                            type3_parts = [p.strip().lower() for p in type3.split(',')]
+                            for part in type3_parts:
+                                # Try direct mapping first
+                                if part in type2_to_key:
+                                    key = type2_to_key[part]
+                                    if key in section and key not in matched_keys:
+                                        matched_keys.append(key)
+                                else:
+                                    # Try fuzzy matching
+                                    for key in section.keys():
+                                        if key != "special_other_restrictions":
+                                            key_normalized = key.replace("_", " ").lower()
+                                            if part in key_normalized or key_normalized in part:
+                                                if key not in matched_keys:
+                                                    matched_keys.append(key)
+                                                break
+                        
+                        # If no match from type2/type3, try fuzzy matching on type2
+                        if not matched_keys and type2:
                             for key in section.keys():
                                 if key != "special_other_restrictions":
                                     key_normalized = key.replace("_", " ").lower()
                                     if type2 in key_normalized or key_normalized in type2:
-                                        matched_key = key
+                                        matched_keys.append(key)
                                         break
                         
+                        # Apply to matched keys
+                        if matched_keys:
+                            for matched_key in matched_keys:
+                                section[matched_key]["allowed"] = allowed
+                                section[matched_key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
+                                section[matched_key]["evidence"] = {"page": 1, "text": reason}
+                            excel_mapping_succeeded = True
+                            logger.info(f"✅ EXCEL MAPPING: Mapped '{entry['instrument_category']}' → {type1}/{matched_keys} = {allowed}")
                         # If still no match but type1 matches, apply to all in section (generic)
-                        if not matched_key:
+                        elif not matched_keys:
+                        
                             # Apply to all instruments in this section
                             for key in section.keys():
                                 if key != "special_other_restrictions":
                                     section[key]["allowed"] = allowed
                                     section[key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
                                     section[key]["evidence"] = {"page": 1, "text": reason}
-                        else:
-                            # Apply to specific matched key
-                            section[matched_key]["allowed"] = allowed
-                            section[matched_key]["note"] = f"Excel mapping: {entry['instrument_category']} - {reason}"
-                            section[matched_key]["evidence"] = {"page": 1, "text": reason}
-                            logger.debug(f"EXCEL MAPPING: Mapped '{entry['instrument_category']}' → {type1}/{matched_key} = {allowed}")
-                    
+                            excel_mapping_succeeded = True
+                            logger.info(f"✅ EXCEL MAPPING: Applied '{entry['instrument_category']}' to all instruments in '{type1}' section (allowed={allowed})")
+                    else:
+                        # type1 doesn't match any OCRD section - log warning
+                        logger.warning(f"⚠️ EXCEL MAPPING: type1 '{type1}' not found in OCRD sections for instrument '{instrument}'. Entry: {entry.get('instrument_category', 'unknown')}")
+                        data["notes"].append(
+                            f"[WARNING] Excel mapping found entry for '{instrument}' but type1 '{type1}' doesn't match OCRD sections. Will try fallback matching."
+                        )
+                
+                # CRITICAL FIX: Only mark as processed if Excel mapping actually succeeded in updating OCRD structure
+                if excel_mapping_succeeded:
                     processed_instruments.add(instrument)
+                    logger.info(f"✅ Excel mapping successfully processed '{instrument}' - skipping fallback logic")
+                elif matching_entries:
+                    # Excel mapping found entries but couldn't update OCRD (e.g., type1 mismatch)
+                    # Don't mark as processed - let fallback logic handle it
+                    logger.warning(f"⚠️ Excel mapping found {len(matching_entries)} entries for '{instrument}' but failed to update OCRD structure. Will try fallback matching.")
+                else:
+                    # No matching entries found - will use fallback logic
+                    logger.debug(f"Excel mapping found no matches for '{instrument}' - will use fallback logic")
             
             # Skip if already processed by Excel mapping
             if instrument in processed_instruments:
+                logger.debug(f"Skipping '{instrument}' - already processed by Excel mapping")
                 continue
+            
+            # Fallback logic: Use direct instrument matching (when Excel mapping didn't work or isn't available)
+            logger.info(f"🔄 Using fallback matching for '{instrument}' (Excel mapping didn't process it)")
             
             # Normalize instrument name (handle underscores, spaces, hyphens)
             instrument_normalized = instrument.replace("_", " ").replace("-", " ")
@@ -815,14 +979,14 @@ class AnalysisService:
                                 "text": reason
                             }
                             instrument_found = True
-                            match_msg = f"[DEBUG] ✓ Matched '{instrument}' → '{key}' in '{section}'"
-                            logger.debug(match_msg)
+                            match_msg = f"[DEBUG] ✓ Matched '{instrument}' → '{key}' in '{section}' (allowed={allowed})"
+                            logger.info(match_msg)  # Changed to info level for better visibility
                             data["notes"].append(match_msg)  # Add to notes for visibility
                             break  # Stop after first match to avoid duplicate matches
                 
                 # CRITICAL: For generic terms, apply to ALL instruments in that section
                 if not instrument_found and is_generic:
-                    logger.debug(f"Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section")
+                    logger.info(f"✅ Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section (allowed={allowed})")
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
@@ -832,12 +996,12 @@ class AnalysisService:
                                 "text": reason
                             }
                     instrument_found = True
-                    data["notes"].append(
-                        f"Generic instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
-                    )
+                    generic_msg = f"Generic instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    logger.info(f"✅ {generic_msg}")
+                    data["notes"].append(generic_msg)
                 elif not instrument_found and section:
-                    # Non-generic term but no match - apply to first instrument in section as fallback
-                    logger.warning(f"Could not match instrument '{instrument}' to specific instrument in '{section}', applying to all in section")
+                    # Non-generic term but no match - apply to all instruments in section as fallback
+                    logger.warning(f"⚠️ Could not match instrument '{instrument}' to specific instrument in '{section}', applying to ALL in section (allowed={allowed})")
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
@@ -846,9 +1010,9 @@ class AnalysisService:
                                 "page": 1,
                                 "text": reason
                             }
-                    data["notes"].append(
-                        f"Unmatched instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
-                    )
+                    unmatched_msg = f"Unmatched instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    logger.info(f"✅ {unmatched_msg}")
+                    data["notes"].append(unmatched_msg)
                 elif not section:
                     # Couldn't even determine which section this belongs to
                     logger.error(f"Could not determine section for instrument '{instrument}'")
@@ -867,9 +1031,24 @@ class AnalysisService:
             for key, value in section.items()
             if isinstance(value, dict) and value.get("allowed") is True
         )
-        final_debug = f"[DEBUG] After processing: {final_allowed_count} instruments set to allowed=True"
+        
+        # Count total instruments
+        total_instruments_count = sum(
+            1 for section in data["sections"].values()
+            for key, value in section.items()
+            if isinstance(value, dict) and "allowed" in value
+        )
+        
+        final_debug = f"[DEBUG] After processing: {final_allowed_count}/{total_instruments_count} instruments set to allowed=True"
         data["notes"].append(final_debug)
-        logger.debug(final_debug)
+        
+        if final_allowed_count == 0:
+            logger.warning(f"⚠️ {final_debug} - This might indicate a problem!")
+            data["notes"].append(
+                "[WARNING] No instruments were marked as allowed. Check logs for details about why rules weren't applied."
+            )
+        else:
+            logger.info(f"✅ {final_debug}")
         
         return data
 

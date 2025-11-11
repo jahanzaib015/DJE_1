@@ -182,6 +182,14 @@ Document:
             )
             raw = response.choices[0].message.content
 
+            # Save raw LLM response to trace file (before parsing to rule out parser errors)
+            if trace_id:
+                trace_dir = self.trace_handler.get_trace_dir(trace_id)
+                os.makedirs(trace_dir, exist_ok=True)
+                raw_response_path = os.path.join(trace_dir, f"{trace_id}_llm_raw.txt")
+                with open(raw_response_path, 'w', encoding='utf-8') as f:
+                    f.write(raw)
+
             # Parse JSON safely
             cleaned = raw.strip().strip("```json").strip("```")
             result = json.loads(cleaned)
@@ -217,6 +225,15 @@ Document:
                         ]
                     )
                     raw = response.choices[0].message.content
+                    
+                    # Save raw LLM response to trace file (fallback model)
+                    if trace_id:
+                        trace_dir = self.trace_handler.get_trace_dir(trace_id)
+                        os.makedirs(trace_dir, exist_ok=True)
+                        raw_response_path = os.path.join(trace_dir, f"{trace_id}_llm_raw.txt")
+                        with open(raw_response_path, 'w', encoding='utf-8') as f:
+                            f.write(raw)
+                    
                     cleaned = raw.strip().strip("```json").strip("```")
                     result = json.loads(cleaned)
                     return self._validate_result(result)
@@ -231,6 +248,15 @@ Document:
                         ]
                     )
                     raw = response.choices[0].message.content
+                    
+                    # Save raw LLM response to trace file (fallback model)
+                    if trace_id:
+                        trace_dir = self.trace_handler.get_trace_dir(trace_id)
+                        os.makedirs(trace_dir, exist_ok=True)
+                        raw_response_path = os.path.join(trace_dir, f"{trace_id}_llm_raw.txt")
+                        with open(raw_response_path, 'w', encoding='utf-8') as f:
+                            f.write(raw)
+                    
                     cleaned = raw.strip().strip("```json").strip("```")
                     result = json.loads(cleaned)
                     return self._validate_result(result)
