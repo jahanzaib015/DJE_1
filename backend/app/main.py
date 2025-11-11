@@ -100,16 +100,46 @@ async def startup_event():
         # Try to load Investment_Mapping.xlsx from root directory
         import os
         excel_mapping_path = None
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Calculate root directory (two levels up from backend/app/main.py)
+        # backend/app/main.py -> backend/app -> backend -> root
+        current_file = os.path.abspath(__file__)
+        backend_dir = os.path.dirname(os.path.dirname(current_file))  # backend/app -> backend
+        root_dir = os.path.dirname(backend_dir)  # backend -> root
         investment_mapping_path = os.path.join(root_dir, "Investment_Mapping.xlsx")
+        
+        logger.info(f"🔍 Looking for Excel file:")
+        logger.info(f"   Current file: {current_file}")
+        logger.info(f"   Root directory: {root_dir}")
+        logger.info(f"   Expected path: {investment_mapping_path}")
+        logger.info(f"   File exists: {os.path.exists(investment_mapping_path)}")
+        
         if os.path.exists(investment_mapping_path):
             excel_mapping_path = investment_mapping_path
-            logger.info(f"📊 Found Investment_Mapping.xlsx at: {investment_mapping_path}")
+            logger.info(f"✅ Found Investment_Mapping.xlsx at: {investment_mapping_path}")
         else:
-            logger.info("ℹ️ Investment_Mapping.xlsx not found in root, using embedded mapping")
+            logger.warning(f"⚠️ Investment_Mapping.xlsx not found at: {investment_mapping_path}")
+            logger.info("   Trying alternative locations...")
+            
+            # Try current working directory
+            cwd_path = os.path.join(os.getcwd(), "Investment_Mapping.xlsx")
+            if os.path.exists(cwd_path):
+                excel_mapping_path = cwd_path
+                logger.info(f"✅ Found Investment_Mapping.xlsx in CWD: {cwd_path}")
+            else:
+                logger.warning(f"   Also not found in CWD: {cwd_path}")
+                logger.info("   Will use embedded mapping if available")
         
+        logger.info(f"📤 Passing Excel path to AnalysisService: {excel_mapping_path}")
         analysis_service = AnalysisService(excel_mapping_path=excel_mapping_path)
-        logger.info("✅ AnalysisService initialized successfully")
+        
+        # Verify Excel mapping was loaded
+        if analysis_service.excel_mapping:
+            entry_count = len(analysis_service.excel_mapping.get_all_entries())
+            logger.info(f"✅ AnalysisService initialized successfully with {entry_count} Excel entries")
+        else:
+            logger.error("❌ AnalysisService initialized but Excel mapping is None!")
+        
     except Exception as e:
         logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
         analysis_service = None
