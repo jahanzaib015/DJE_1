@@ -9,7 +9,7 @@ import os
 import json
 import asyncio
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
 import uuid
 from datetime import datetime
 
@@ -17,6 +17,14 @@ from .services.analysis_service import AnalysisService
 from .services.llm_service import LLMService
 from .services.rag_index import query_rag, get_collection_stats
 from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_negation_chunks
+from .services.catalog_service import CatalogService
+from .services.classification_service import ClassificationService
+from .models.catalog_models import (
+    ClassificationRequest,
+    ClassificationResult,
+    InvestmentOffering,
+    CatalogItem
+)
 from .models.analysis_models import AnalysisRequest, JobStatus
 from .utils.file_handler import FileHandler
 from .utils.trace_handler import TraceHandler
@@ -87,11 +95,13 @@ app.add_middleware(
 # Initialize services (will be done in startup event to avoid blocking)
 analysis_service = None
 llm_service = None
+catalog_service = None
+classification_service = None
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup (non-blocking)"""
-    global analysis_service, llm_service
+    global analysis_service, llm_service, catalog_service, classification_service
     
     logger.info("🚀 Starting service initialization...")
     
@@ -151,6 +161,26 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Failed to initialize LLMService: {e}", exc_info=True)
         llm_service = None
+    
+    # Initialize CatalogService
+    try:
+        catalog_service = CatalogService()
+        logger.info("✅ CatalogService initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize CatalogService: {e}", exc_info=True)
+        catalog_service = None
+    
+    # Initialize ClassificationService
+    try:
+        if catalog_service:
+            classification_service = ClassificationService(catalog_service=catalog_service)
+            logger.info("✅ ClassificationService initialized successfully")
+        else:
+            logger.warning("⚠️ ClassificationService not initialized (CatalogService unavailable)")
+            classification_service = None
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize ClassificationService: {e}", exc_info=True)
+        classification_service = None
     
     logger.info("✅ Startup complete")
 
@@ -813,6 +843,170 @@ async def debug_rag(fund_id: str = "5800", k: int = 5):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Debug RAG retrieval failed: {str(e)}")
+
+# ============================================================================
+# Investment Classification & Catalog Management Endpoints
+# ============================================================================
+
+@app.post("/api/classify", response_model=ClassificationResult)
+async def classify_document(request: ClassificationRequest):
+    """Classify a document against the investment catalog"""
+    try:
+        if not classification_service:
+            raise HTTPException(
+                status_code=503, 
+                detail="Classification service not available. Please check server logs."
+            )
+        
+        result = classification_service.classify_document(request)
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Classification failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
+
+
+@app.get("/api/catalog", response_model=List[CatalogItem])
+async def get_catalog(active_only: bool = True):
+    """Get all catalog offerings"""
+    try:
+        if not catalog_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog service not available. Please check server logs."
+            )
+        
+        items = catalog_service.get_all_offerings(active_only=active_only)
+        return items
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get catalog: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get catalog: {str(e)}")
+
+
+@app.get("/api/catalog/{offering_id}", response_model=CatalogItem)
+async def get_offering(offering_id: str):
+    """Get a specific catalog offering by ID"""
+    try:
+        if not catalog_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog service not available. Please check server logs."
+            )
+        
+        item = catalog_service.get_offering_by_id(offering_id)
+        if not item:
+            raise HTTPException(status_code=404, detail=f"Offering '{offering_id}' not found")
+        
+        return item
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to get offering: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get offering: {str(e)}")
+
+
+@app.post("/api/catalog", response_model=CatalogItem)
+async def create_offering(offering: InvestmentOffering):
+    """Create a new catalog offering"""
+    try:
+        if not catalog_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog service not available. Please check server logs."
+            )
+        
+        success = catalog_service.add_offering(offering)
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to create offering. ID '{offering.id}' may already exist."
+            )
+        
+        created = catalog_service.get_offering_by_id(offering.id)
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to retrieve created offering")
+        
+        # Rebuild classification index
+        if classification_service:
+            classification_service._rebuild_index()
+        
+        return created
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to create offering: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create offering: {str(e)}")
+
+
+@app.put("/api/catalog/{offering_id}", response_model=CatalogItem)
+async def update_offering(offering_id: str, offering: InvestmentOffering):
+    """Update an existing catalog offering"""
+    try:
+        if not catalog_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog service not available. Please check server logs."
+            )
+        
+        # Ensure ID matches
+        offering.id = offering_id
+        
+        success = catalog_service.update_offering(offering_id, offering)
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Offering '{offering_id}' not found"
+            )
+        
+        updated = catalog_service.get_offering_by_id(offering_id)
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to retrieve updated offering")
+        
+        # Rebuild classification index
+        if classification_service:
+            classification_service._rebuild_index()
+        
+        return updated
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to update offering: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update offering: {str(e)}")
+
+
+@app.delete("/api/catalog/{offering_id}")
+async def delete_offering(offering_id: str):
+    """Delete a catalog offering"""
+    try:
+        if not catalog_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Catalog service not available. Please check server logs."
+            )
+        
+        success = catalog_service.delete_offering(offering_id)
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Offering '{offering_id}' not found"
+            )
+        
+        # Rebuild classification index
+        if classification_service:
+            classification_service._rebuild_index()
+        
+        return {"success": True, "message": f"Offering '{offering_id}' deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to delete offering: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete offering: {str(e)}")
+
 
 # Mount static files
 import os

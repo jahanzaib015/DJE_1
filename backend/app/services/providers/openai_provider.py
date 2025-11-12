@@ -63,9 +63,14 @@ class OpenAIProvider(LLMProviderInterface):
         """Core analysis call to OpenAI API"""
         # Calculate safe text limit based on model context window
         # GPT-4: 8k tokens (~32k chars), GPT-4o/GPT-5: 128k tokens (~512k chars)
-        # Reserve ~4k tokens for prompt and response
-        if model in ["gpt-4", "gpt-4-turbo"]:
-            max_text_length = 25000  # ~6k tokens for GPT-4 (8k context - 2k for prompt/response)
+        # Reserve tokens for system prompt, user prompt template, and completion
+        if model == "gpt-4":
+            # GPT-4 has 8192 token limit: reserve ~1200 for enhanced prompts, ~2500 for completion = ~4500 tokens (~14000 chars) for document
+            # Enhanced prompts are longer, so we need more conservative limits
+            max_text_length = 14000  # More conservative limit to ensure we stay within 8k token context
+        elif model == "gpt-4-turbo":
+            # GPT-4-turbo has larger context, but be conservative
+            max_text_length = 25000
         else:
             max_text_length = 100000  # Modern models - full limit for comprehensive analysis
         
@@ -74,23 +79,45 @@ class OpenAIProvider(LLMProviderInterface):
         if len(text) > max_text_length:
             logger.warning(f"⚠️ Document is {len(text)} chars, truncating to {max_text_length} for analysis with {model}")
         
-        # Optimized prompt that explicitly looks for BOTH allowed and restricted items
-        prompt = f"""Extract investment rules from this document. Search entire text.
+        # Enhanced prompt that strongly emphasizes finding ALLOWED items
+        prompt = f"""You are analyzing an investment policy document. Your PRIMARY goal is to find ALL items that are explicitly stated as ALLOWED or PERMITTED.
 
-CRITICAL: Look for BOTH:
-- What IS ALLOWED: "permitted", "allowed", "authorized", "may invest", "can invest"
-- What IS NOT ALLOWED: "prohibited", "forbidden", "not allowed", "restricted", "excluded"
+**STEP 1: SEARCH FOR ALLOWED ITEMS FIRST**
+Actively search for and extract EVERY item explicitly stated as:
+- "allowed", "permitted", "authorized", "approved", "may invest", "can invest"
+- "FX Forwards are allowed", "currency futures are permitted", "forex is authorized"
+- Lists of permitted instruments, sectors, or countries
+- Any positive statement granting permission
 
-Rules to find:
-- Sectors: Energy, Healthcare, Defense, Tobacco, Weapons, etc.
-- Countries: USA, China, Russia, Europe, etc.  
-- Instruments: bonds, stocks, funds, derivatives, options, futures, swaps, etc.
+**STEP 2: THEN SEARCH FOR PROHIBITED ITEMS**
+Extract items explicitly stated as:
+- "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest"
 
-IMPORTANT: If document says investments are generally permitted, mark instruments as allowed=true. Only mark as not allowed if explicitly prohibited.
+**INSTRUMENT NAME RECOGNITION:**
+Recognize these as the SAME instrument types (use the exact name from document):
+- "FX Forwards" = "forex forwards" = "foreign exchange forwards" = "FX" = "forex"
+- "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures"
+- "derivatives" includes: options, futures, forwards, swaps, warrants
 
-For each rule found, mark "allowed": true if permitted, false if prohibited, with brief reason.
+**WHAT TO EXTRACT:**
+- Sectors: Energy, Healthcare, Defense, Tobacco, Weapons, Technology, etc.
+- Countries: USA, China, Russia, Europe, UK, etc.
+- Instruments: Use EXACT names from document (e.g., "FX Forwards", "currency futures", "covered bonds", "common stock", etc.)
 
-Return JSON only:
+**CRITICAL RULES:**
+1. If document says "FX Forwards are allowed" → extract: {{"instrument": "FX Forwards", "allowed": true, "reason": "Document explicitly states FX Forwards are allowed"}}
+2. If document says "currency futures are permitted" → extract: {{"instrument": "currency futures", "allowed": true, "reason": "Document explicitly states currency futures are permitted"}}
+3. DO NOT mark something as "not allowed" unless explicitly prohibited
+4. Search ENTIRE document - rules can be in any section, table, footnote, or appendix
+
+**DO NOT OVER-GENERALIZE:**
+- If document says "securities with equity character are allowed" → this ONLY applies to instruments explicitly described as having equity character, NOT to all bonds
+- If document says "equity index options are allowed" → this ONLY applies to equity index options, NOT to all convertible bonds or structured products
+- If document says "unlisted equities are allowed" → this ONLY applies to unlisted equities, NOT to debt instruments like bonds
+- ONLY extract rules when the SPECIFIC instrument type is mentioned in the rule statement
+- DO NOT assume a general rule applies to all similar instruments
+
+**Return JSON only:**
 {{
   "sector_rules": [{{"sector": "string", "allowed": true/false, "reason": "string"}}],
   "country_rules": [{{"country": "string", "allowed": true/false, "reason": "string"}}],
@@ -98,7 +125,7 @@ Return JSON only:
   "conflicts": [{{"category": "string", "detail": "string"}}]
 }}
 
-Document:
+**Document text to analyze (search through ALL of it systematically):**
 {text_to_analyze}"""
 
         # Use connection pooling for faster requests (reuse connections)
@@ -111,20 +138,50 @@ Document:
                 "messages": [
                     {
                         "role": "system",
-                        "content": """You are a senior compliance analyst specializing in investment restrictions.
+                        "content": """You are a senior compliance analyst specializing in investment rules.
 
-CRITICAL INSTRUCTIONS:
-- Extract rules that are CLEARLY stated in the document (don't invent rules that aren't there)
-- Look for BOTH allowed AND prohibited items - don't only focus on restrictions
-- Recognize common policy language: "permitted", "allowed", "authorized", "may invest", "can invest" = allowed=true; "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest" = allowed=false
-- IMPORTANT: If document says investments are generally permitted or lists what can be invested in, mark those as allowed=true
-- Only mark as not allowed if explicitly prohibited or restricted
-- Extract rules even if they're stated indirectly (e.g., "prohibited from investing in tobacco" = tobacco sector not allowed)
-- Do NOT mix different rule categories (keep sectors, countries, instruments separate)
-- Look for buried rules in tables, footnotes, and appendices - search the ENTIRE document
-- If text is unclear or contradictory, record it in conflicts section
+CRITICAL INSTRUCTIONS - READ CAREFULLY:
 
-Your task: Extract factual rules about where investments are permitted OR prohibited. Search through the entire document systematically and extract ALL rules you can identify - both what IS allowed and what is NOT allowed.
+1. DEFAULT ASSUMPTION: If a rule is NOT explicitly stated, DO NOT mark it as "not allowed". Only mark as "not allowed" if the document EXPLICITLY prohibits or restricts it.
+
+2. PRIORITIZE FINDING ALLOWED ITEMS: Actively search for and extract ALL items that are explicitly stated as ALLOWED, PERMITTED, or AUTHORIZED. These are just as important as prohibited items.
+
+3. RECOGNIZE ALLOWED LANGUAGE (mark as allowed=true):
+   - "permitted", "allowed", "authorized", "approved", "may invest", "can invest"
+   - "investments are permitted in...", "the fund may invest in...", "investments in X are allowed"
+   - "FX Forwards are allowed", "currency futures are permitted", "forex is authorized"
+   - Lists of permitted instruments, sectors, or countries
+   - Positive statements like "investments in [X] are permitted"
+
+4. RECOGNIZE PROHIBITED LANGUAGE (mark as allowed=false):
+   - "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest"
+   - "investments in X are not allowed", "prohibited from investing in..."
+
+5. INSTRUMENT NAME VARIATIONS: Recognize that these refer to the SAME instrument type:
+   - "FX Forwards" = "forex forwards" = "foreign exchange forwards" = "FX" = "forex"
+   - "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures"
+   - "derivatives" includes: options, futures, forwards, swaps, warrants
+   - Extract the specific instrument name as stated in the document
+
+6. EXTRACTION RULES:
+   - Extract rules that are CLEARLY stated in the document (don't invent rules)
+   - Look for buried rules in tables, footnotes, appendices - search the ENTIRE document
+   - Extract rules even if stated indirectly (e.g., "prohibited from investing in tobacco" = tobacco sector not allowed)
+   - Do NOT mix different rule categories (keep sectors, countries, instruments separate)
+   - If text is unclear or contradictory, record it in conflicts section
+
+7. CRITICAL: DO NOT OVER-GENERALIZE RULES
+   - A rule about "securities with equity character are allowed" does NOT mean ALL bonds are allowed
+   - A rule about "equity index options are allowed" does NOT mean ALL convertible bonds are allowed
+   - A rule about "unlisted equities are allowed" does NOT mean ALL debt instruments are allowed
+   - ONLY extract rules for instruments that are EXPLICITLY mentioned in the rule statement
+   - Example: If document says "convertible bonds are allowed" → extract rule for "convertible bonds" specifically
+   - Example: If document says "securities with equity character are allowed" → ONLY extract for instruments explicitly described as having equity character, NOT for regular bonds
+   - DO NOT assume that a general rule applies to all similar instruments
+
+8. CRITICAL: If the document explicitly states "FX Forwards are allowed" or "currency futures are permitted", you MUST extract this as an instrument rule with allowed=true. Do NOT miss these positive permission statements.
+
+Your task: Systematically search through the ENTIRE document and extract ALL rules - prioritize finding what IS ALLOWED, then what is NOT ALLOWED. Extract every explicitly stated permission or prohibition.
 
 Return ONLY valid JSON matching the required schema."""
                     },
@@ -141,8 +198,13 @@ Return ONLY valid JSON matching the required schema."""
                 payload["max_completion_tokens"] = 4000
             else:
                 # Standard models (gpt-4o, gpt-4-turbo, etc.) use max_tokens
-                # Keep full max_tokens for comprehensive rule extraction
-                payload["max_tokens"] = 4000
+                # GPT-4 has 8k context window, so reduce max_tokens to fit within limit
+                # Enhanced prompts are longer (~1200 tokens), so reserve ~2500 for completion
+                if model == "gpt-4":
+                    payload["max_tokens"] = 2500  # 8192 total - ~5500 input (enhanced prompts) - ~200 buffer
+                else:
+                    # Modern models (gpt-4o, gpt-4-turbo, etc.) have larger context windows
+                    payload["max_tokens"] = 4000  # Full limit for comprehensive rule extraction
 
             headers = {
                 "Authorization": f"Bearer {self.api_key}",

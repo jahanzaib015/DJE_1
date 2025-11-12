@@ -1,0 +1,61 @@
+[
+  {
+    "id": "precious_metals",
+    "label": "Precious metals",
+    "synonyms": [
+      "gold",
+      "silver",
+      "platinum",
+      "palladium",
+      "bullion",
+      "commodity metals"
+    ],
+    "description": "Direct exposure or ETFs tracking precious metals.",
+    "constraints": {
+      "instrument_types": [
+        "physical",
+        "etf",
+        "cfds"
+      ],
+      "regions": [
+        "EU",
+        "US"
+      ],
+      "investor_types": null,
+      "min_ticket_eur": 10000.0,
+      "max_ticket_eur": null,
+      "regulatory_tags": null,
+      "other_constraints": null
+    },
+    "active": true,
+    "metadata": null
+  },
+  {
+    "id": "private_credit",
+    "label": "Private Credit",
+    "synonyms": [
+      "direct lending",
+      "mezzanine debt",
+      "unitranche",
+      "private debt"
+    ],
+    "description": "Non-public corporate lending strategies.",
+    "constraints": {
+      "instrument_types": [
+        "loan",
+        "fund"
+      ],
+      "regions": null,
+      "investor_types": [
+        "professional",
+        "institutional"
+      ],
+      "min_ticket_eur": null,
+      "max_ticket_eur": null,
+      "regulatory_tags": null,
+      "other_constraints": null
+    },
+    "active": true,
+    "metadata": null
+  }
+]

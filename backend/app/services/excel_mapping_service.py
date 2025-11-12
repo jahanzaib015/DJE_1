@@ -642,6 +642,8 @@ Examples of semantic matching:
 - "stocks" = "equities" = "shares" = "Aktien" (German) = "Wertpapiere"
 - "funds" = "investment funds" = "mutual funds" = "Fonds" (German) = "Investmentfonds"
 - "derivatives" = "options" = "futures" = "Derivate" (German) = "Termingeschäfte"
+- "FX Forwards" = "forex forwards" = "foreign exchange forwards" = "FX" = "forex" = "currency forwards"
+- "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures" = "currency futures contracts"
 
 OCRD Taxonomy Reference (first 50 IDs):
 {ocrd_ids_text}
@@ -655,9 +657,29 @@ Instructions:
   * Don't require exact OCRD ID names - match the CONCEPT/CATEGORY
   * "covered_bond" concept matches "Pfandbriefe", "covered bonds", "gedeckte Anleihen", etc.
   * "equity_fund" concept matches "Aktienfonds", "stock funds", "equity investment funds", etc.
+
+**CRITICAL: DO NOT OVER-GENERALIZE RULES**
+- A rule about "securities with equity character" does NOT mean ALL bonds are allowed
+- A rule about "equity index options" does NOT mean ALL convertible bonds are allowed
+- A rule about "unlisted equities" does NOT mean ALL debt instruments are allowed
+- ONLY match if the SPECIFIC instrument name or a DIRECT synonym is mentioned in the SAME context as the rule
+- If the document says "securities with equity character are allowed", this ONLY applies to instruments that are explicitly described as having "equity character" - NOT to regular bonds, mortgage bonds, or other debt instruments
+- If you find a general rule but the specific instrument "{instrument_name}" is NOT mentioned in that context, set "found": false
+
+**MATCHING REQUIREMENTS:**
+- The instrument name "{instrument_name}" OR a direct synonym must appear in the SAME sentence or paragraph as the rule
+- The rule must explicitly mention the instrument type, not just a broader category
+- Example: If document says "convertible bonds are allowed" → match for "convertible_bond" instruments
+- Example: If document says "securities with equity character are allowed" → ONLY match instruments that are explicitly described as having equity character, NOT all bonds
+
 - If found, determine if it's ALLOWED or PROHIBITED based on context
-- Look for keywords: "permitted", "allowed", "authorized", "may invest", "can invest", "darf", "erlaubt" = ALLOWED
-- Look for keywords: "prohibited", "forbidden", "not allowed", "restricted", "excluded", "verboten", "nicht erlaubt" = PROHIBITED
+- **PRIORITY: Look for ALLOWED keywords FIRST** - these are just as important as prohibited items:
+  - "permitted", "allowed", "authorized", "approved", "may invest", "can invest", "darf", "erlaubt" = ALLOWED
+  - "FX Forwards are allowed", "currency futures are permitted", "forex is authorized" = ALLOWED
+  - Lists of permitted instruments = ALLOWED
+- Then look for PROHIBITED keywords:
+  - "prohibited", "forbidden", "not allowed", "restricted", "excluded", "verboten", "nicht erlaubt" = PROHIBITED
+- **CRITICAL: If document explicitly states an instrument is "allowed" or "permitted", mark it as allowed=true. Do NOT default to "not allowed" unless explicitly prohibited.**
 
 Respond with ONLY a JSON object:
 {{
