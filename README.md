@@ -99,6 +99,13 @@ python run.py
 - Install Visual Studio Build Tools
 - Or use the `install_windows.bat` script
 
+**Running Python bytecode checks:**
+- Use the Python interpreter available in your active environment, for example:
+  ```bash
+  python -m compileall backend/app/services/analysis_service.py
+  ```
+- On Windows PowerShell or Command Prompt, replace `python` with the interpreter name you installed (for example `python3`); the `py` launcher is not required unless you already rely on it.
+
 ## 🎯 Usage
 
 ### Web Interface
