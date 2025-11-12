@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import uuid
 from typing import Dict, Any, Optional, Tuple
@@ -211,9 +212,31 @@ class AnalysisService:
                 out["sections"][section][r] = {"allowed": False, "note": "", "evidence": {"page": None, "text": ""}}
             if section in ("stock", "fund", "bond", "certificate", "deposit", "future", "option", "warrant", "commodity", "forex", "swap", "loan", "private_equity", "real_estate", "rights"):
                 out["sections"][section]["special_other_restrictions"] = []
-        
+
         return out
-    
+
+    def _normalize_instrument_name(self, name: str) -> str:
+        """Normalize instrument names to improve matching accuracy."""
+        if not name:
+            return ""
+
+        normalized = name.lower().strip()
+        normalized = normalized.replace("-", " ")
+        normalized = normalized.replace("_", " ")
+
+        # Treat FX as synonym for FOREX before matching
+        normalized = re.sub(r"\bfx\b", "forex", normalized)
+        normalized = re.sub(r"\bfx(?=\s)", "forex", normalized)
+        normalized = re.sub(r"\bfx(?=[a-z])", "forex", normalized)
+
+        # Normalize "foreign exchange" phrases to forex for consistency
+        normalized = normalized.replace("foreign exchange", "forex")
+
+        # Collapse multiple spaces
+        normalized = re.sub(r"\s+", " ", normalized)
+
+        return normalized.strip()
+
     def _analyze_with_keywords(self, data: Dict[str, Any], text: str) -> Dict[str, Any]:
         """Fast keyword-based analysis"""
         text_lower = text.lower()
@@ -653,21 +676,48 @@ class AnalysisService:
                 logger.info(f"  Rule {i+1}: '{rule.instrument}' = allowed={rule.allowed}")
         
         for rule in instrument_rules:
-            instrument = rule.instrument.lower().strip()
+            original_instrument = rule.instrument.strip()
+            instrument_lower = original_instrument.lower()
+            instrument_normalized = self._normalize_instrument_name(original_instrument)
             allowed = rule.allowed
             reason = rule.reason
-            
-            logger.info(f"🔍 Processing rule: instrument='{instrument}', allowed={allowed}, reason='{reason[:100]}...'")
-            
+
+            logger.info(
+                f"🔍 Processing rule: instrument='{original_instrument}', "
+                f"normalized='{instrument_normalized}', allowed={allowed}, "
+                f"reason='{reason[:100]}...'"
+            )
+
             # Check for negative logic if Excel mapping is available
             excel_mapping_succeeded = False  # Track if Excel mapping actually updated OCRD structure
             if self.excel_mapping:
                 # Use Excel mapping to find matching entries
                 # Use full text context if available for better negative logic detection
                 context_for_matching = full_text if full_text else reason
-                matching_entries = self.excel_mapping.find_matching_entries(instrument, context=context_for_matching)
-                
-                logger.info(f"🔍 Excel mapping for '{instrument}': found {len(matching_entries)} entries")
+                matching_entries = []
+
+                # Try multiple search variants to maximize matches (exact, normalized, underscore)
+                search_variants = {
+                    instrument_lower,
+                    instrument_lower.replace(" ", "_"),
+                    instrument_normalized,
+                    instrument_normalized.replace(" ", "_")
+                }
+
+                for search_term in search_variants:
+                    if not search_term:
+                        continue
+                    matching_entries = self.excel_mapping.find_matching_entries(
+                        search_term,
+                        context=context_for_matching
+                    )
+                    if matching_entries:
+                        break
+
+                logger.info(
+                    f"🔍 Excel mapping for '{instrument_normalized}': "
+                    f"found {len(matching_entries)} entries"
+                )
                 if matching_entries:
                     for i, entry in enumerate(matching_entries[:3]):
                         logger.info(f"  Match {i+1}: '{entry.get('instrument_category', 'unknown')}' → Type1={entry.get('asset_tree_type1')}, Type2={entry.get('asset_tree_type2')}")
@@ -680,11 +730,16 @@ class AnalysisService:
                 # Only check negative logic if we have matching entries (more reliable)
                 if matching_entries:
                     # Check for negative logic in the full text context (better detection)
-                    is_negative, neg_explanation = self.excel_mapping.detect_negative_logic(context_for_matching, instrument)
+                    is_negative, neg_explanation = self.excel_mapping.detect_negative_logic(
+                        context_for_matching,
+                        original_instrument
+                    )
                     if is_negative:
                         allowed = not allowed  # Flip the logic
                         reason = f"{reason} [Negative logic detected: {neg_explanation}]"
-                        logger.info(f"EXCEL MAPPING: Negative logic detected for '{instrument}': {neg_explanation}")
+                        logger.info(
+                            f"EXCEL MAPPING: Negative logic detected for '{original_instrument}': {neg_explanation}"
+                        )
                 
                 # Update Excel mapping entries AND populate OCRD structure using Asset Tree
                 for entry in matching_entries:
@@ -807,34 +862,51 @@ class AnalysisService:
                             logger.info(f"✅ EXCEL MAPPING: Applied '{entry['instrument_category']}' to all instruments in '{type1}' section (allowed={allowed})")
                     else:
                         # type1 doesn't match any OCRD section - log warning
-                        logger.warning(f"⚠️ EXCEL MAPPING: type1 '{type1}' not found in OCRD sections for instrument '{instrument}'. Entry: {entry.get('instrument_category', 'unknown')}")
+                        logger.warning(
+                            f"⚠️ EXCEL MAPPING: type1 '{type1}' not found in OCRD sections for instrument "
+                            f"'{original_instrument}'. Entry: {entry.get('instrument_category', 'unknown')}"
+                        )
                         data["notes"].append(
-                            f"[WARNING] Excel mapping found entry for '{instrument}' but type1 '{type1}' doesn't match OCRD sections. Will try fallback matching."
+                            f"[WARNING] Excel mapping found entry for '{original_instrument}' but type1 '{type1}' "
+                            "doesn't match OCRD sections. Will try fallback matching."
                         )
                 
                 # CRITICAL FIX: Only mark as processed if Excel mapping actually succeeded in updating OCRD structure
                 if excel_mapping_succeeded:
-                    processed_instruments.add(instrument)
-                    logger.info(f"✅ Excel mapping successfully processed '{instrument}' - skipping fallback logic")
+                    processed_instruments.add(instrument_normalized)
+                    logger.info(
+                        f"✅ Excel mapping successfully processed '{instrument_normalized}' "
+                        "- skipping fallback logic"
+                    )
                 elif matching_entries:
                     # Excel mapping found entries but couldn't update OCRD (e.g., type1 mismatch)
                     # Don't mark as processed - let fallback logic handle it
-                    logger.warning(f"⚠️ Excel mapping found {len(matching_entries)} entries for '{instrument}' but failed to update OCRD structure. Will try fallback matching.")
+                    logger.warning(
+                        f"⚠️ Excel mapping found {len(matching_entries)} entries for "
+                        f"'{original_instrument}' but failed to update OCRD structure. Will try fallback matching."
+                    )
                 else:
                     # No matching entries found - will use fallback logic
-                    logger.debug(f"Excel mapping found no matches for '{instrument}' - will use fallback logic")
-            
+                    logger.debug(
+                        f"Excel mapping found no matches for '{original_instrument}' - will use fallback logic"
+                    )
+
             # Skip if already processed by Excel mapping
-            if instrument in processed_instruments:
-                logger.debug(f"Skipping '{instrument}' - already processed by Excel mapping")
+            if instrument_normalized in processed_instruments:
+                logger.debug(
+                    f"Skipping '{instrument_normalized}' - already processed by Excel mapping"
+                )
                 continue
-            
+
             # Fallback logic: Use direct instrument matching (when Excel mapping didn't work or isn't available)
-            logger.info(f"🔄 Using fallback matching for '{instrument}' (Excel mapping didn't process it)")
-            
+            logger.info(
+                f"🔄 Using fallback matching for '{original_instrument}' "
+                f"(normalized='{instrument_normalized}') - Excel mapping didn't process it"
+            )
+
             # Normalize instrument name (handle underscores, spaces, hyphens)
-            instrument_normalized = instrument.replace("_", " ").replace("-", " ")
-            
+            instrument_normalized = instrument_normalized.replace("_", " ").replace("-", " ")
+
             # Build comprehensive mapping of instruments to sections and specific instrument names
             instrument_mapping = {
                 # Generic terms
@@ -887,15 +959,22 @@ class AnalysisService:
             }
             
             # First try exact match
-            section = instrument_mapping.get(instrument) or instrument_mapping.get(instrument_normalized)
-            
+            lookup_candidates = [instrument_lower, instrument_lower.replace(" ", "_"), instrument_normalized]
+            section = None
+            for candidate in lookup_candidates:
+                if candidate in instrument_mapping:
+                    section = instrument_mapping[candidate]
+                    break
+            if not section and instrument_normalized:
+                section = instrument_mapping.get(instrument_normalized)
+
             # If no exact match, try partial matching
             if not section:
                 for key, value in instrument_mapping.items():
-                    if key in instrument or instrument in key:
+                    if key in instrument_normalized or instrument_normalized in key:
                         section = value
                         break
-            
+
             # If still no match, try to infer from instrument name
             if not section:
                 if "bond" in instrument_normalized:
@@ -916,20 +995,22 @@ class AnalysisService:
                     section = "commodity"
                 elif "forex" in instrument_normalized or "currency" in instrument_normalized:
                     section = "forex"
-            
+
             if section and section in data["sections"]:
                 # Try to match specific instrument names within the section
                 instrument_found = False
                 
                 # Check if instrument name is generic (just "bond", "stock", "fund" without specificity)
-                is_generic = instrument_normalized in ["bond", "bonds", "stock", "stocks", "equity", "equities", 
-                                                       "fund", "funds", "derivative", "derivatives", "option", "options",
-                                                       "future", "futures", "warrant", "warrants", "swap", "swaps",
-                                                       "commodity", "commodities", "forex", "currency"]
-                
+                is_generic = instrument_normalized in [
+                    "bond", "bonds", "stock", "stocks", "equity", "equities",
+                    "fund", "funds", "derivative", "derivatives", "option", "options",
+                    "future", "futures", "warrant", "warrants", "swap", "swaps",
+                    "commodity", "commodities", "forex", "currency"
+                ] or instrument_normalized.strip() == "forex forwards"
+
                 # Normalize instrument to word list for flexible matching
                 instrument_words = set(instrument_normalized.split())
-                
+
                 for key in data["sections"][section]:
                     if key != "special_other_restrictions":
                         # Normalize key name
@@ -973,51 +1054,75 @@ class AnalysisService:
                         if matches_flexibly(instrument_normalized, instrument_words, key_normalized, key_words):
                             # Found specific match - only update this one
                             data["sections"][section][key]["allowed"] = allowed
-                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["note"] = f"Instrument rule: {original_instrument} - {reason}"
                             data["sections"][section][key]["evidence"] = {
                                 "page": 1,
                                 "text": reason
                             }
                             instrument_found = True
-                            match_msg = f"[DEBUG] ✓ Matched '{instrument}' → '{key}' in '{section}' (allowed={allowed})"
+                            match_msg = (
+                                f"[DEBUG] ✓ Matched '{original_instrument}' "
+                                f"(normalized='{instrument_normalized}') → '{key}' in '{section}' "
+                                f"(allowed={allowed})"
+                            )
                             logger.info(match_msg)  # Changed to info level for better visibility
                             data["notes"].append(match_msg)  # Add to notes for visibility
                             break  # Stop after first match to avoid duplicate matches
-                
+
                 # CRITICAL: For generic terms, apply to ALL instruments in that section
                 if not instrument_found and is_generic:
-                    logger.info(f"✅ Generic instrument term '{instrument}' found - applying to ALL instruments in '{section}' section (allowed={allowed})")
+                    logger.info(
+                        f"✅ Generic instrument term '{original_instrument}' "
+                        f"(normalized='{instrument_normalized}') found - applying to ALL instruments "
+                        f"in '{section}' section (allowed={allowed})"
+                    )
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
-                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["note"] = f"Instrument rule: {original_instrument} - {reason}"
                             data["sections"][section][key]["evidence"] = {
                                 "page": 1,
                                 "text": reason
                             }
                     instrument_found = True
-                    generic_msg = f"Generic instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    generic_msg = (
+                        f"Generic instrument rule applied broadly: {original_instrument} "
+                        f"(normalized='{instrument_normalized}') = "
+                        f"{'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    )
                     logger.info(f"✅ {generic_msg}")
                     data["notes"].append(generic_msg)
                 elif not instrument_found and section:
                     # Non-generic term but no match - apply to all instruments in section as fallback
-                    logger.warning(f"⚠️ Could not match instrument '{instrument}' to specific instrument in '{section}', applying to ALL in section (allowed={allowed})")
+                    logger.warning(
+                        f"⚠️ Could not match instrument '{original_instrument}' "
+                        f"(normalized='{instrument_normalized}') to specific instrument in '{section}', "
+                        f"applying to ALL in section (allowed={allowed})"
+                    )
                     for key in data["sections"][section]:
                         if key != "special_other_restrictions":
                             data["sections"][section][key]["allowed"] = allowed
-                            data["sections"][section][key]["note"] = f"Instrument rule: {instrument} - {reason}"
+                            data["sections"][section][key]["note"] = f"Instrument rule: {original_instrument} - {reason}"
                             data["sections"][section][key]["evidence"] = {
                                 "page": 1,
                                 "text": reason
                             }
-                    unmatched_msg = f"Unmatched instrument rule applied broadly: {instrument} = {'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    unmatched_msg = (
+                        f"Unmatched instrument rule applied broadly: {original_instrument} "
+                        f"(normalized='{instrument_normalized}') = "
+                        f"{'Allowed' if allowed else 'Not Allowed'}. Reason: {reason}"
+                    )
                     logger.info(f"✅ {unmatched_msg}")
                     data["notes"].append(unmatched_msg)
                 elif not section:
                     # Couldn't even determine which section this belongs to
-                    logger.error(f"Could not determine section for instrument '{instrument}'")
+                    logger.error(
+                        f"Could not determine section for instrument '{original_instrument}' "
+                        f"(normalized='{instrument_normalized}')"
+                    )
                     data["notes"].append(
-                        f"ERROR: Unmatched instrument rule '{instrument}' = {'Allowed' if allowed else 'Not Allowed'}. "
+                        f"ERROR: Unmatched instrument rule '{original_instrument}' "
+                        f"(normalized='{instrument_normalized}') = {'Allowed' if allowed else 'Not Allowed'}. "
                         f"Could not determine instrument category. Reason: {reason}"
                     )
         
