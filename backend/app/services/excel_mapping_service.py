@@ -13,6 +13,30 @@ from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# =========================
+# NEW: Guardrails & Helpers
+# =========================
+GENERIC_PARENTS = {
+    "bond", "bonds", "equity", "equities", "stock", "stocks",
+    "derivative", "derivatives", "fund", "funds",
+    "security", "securities", "fixed income", "debt instrument", "debt instruments"
+}
+ALLOW_MARKERS = re.compile(r"\b(eligible|permitted|allowed|authorized|approved|may invest|can invest|investment universe includes)\b", re.I)
+PROHIBIT_MARKERS = re.compile(r"\b(prohibited|forbidden|not allowed|not permitted|restricted|excluded|shall not|may not|cannot)\b", re.I)
+CONDITIONAL_MARKERS = re.compile(r"\b(subject to|provided that|unless|up to|limit|capped at|conditional)\b", re.I)
+ALL_QUANTIFIERS = re.compile(r"\b(all|any|in general|including but not limited to)\b", re.I)
+
+def _normalize_simple(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _is_generic_parent(term: str) -> bool:
+    return _normalize_simple(term) in GENERIC_PARENTS
+
+def _sentence_window(text: str, pos: int, span: int = 260) -> str:
+    start = max(0, pos - span)
+    end = min(len(text), pos + span)
+    return text[start:end]
+
 
 class ExcelMappingService:
     """Service for managing Excel-based instrument/category mapping"""
@@ -28,23 +52,22 @@ class ExcelMappingService:
         self.instrument_lookup: Dict[str, List[Dict]] = {}  # instrument -> list of matching entries
         self.asset_tree_lookup: Dict[str, Dict[str, List[Dict]]] = {}  # type1 -> type2 -> type3 -> entries
         self.synonym_lookup: Dict[str, List[Dict]] = {}  # normalized synonym -> entries
+        self._indexes_built = False  # Lazy loading flag
         
-        logger.info(f"🔧 Initializing ExcelMappingService with path: {excel_path}")
+        logger.debug(f"Initializing ExcelMappingService with path: {excel_path}")
         
         if excel_path:
             if os.path.exists(excel_path):
-                logger.info(f"✅ Excel file exists at: {excel_path}")
+                logger.info(f"Loading Excel file: {excel_path}")
                 self.load_from_excel(excel_path)
             else:
-                logger.warning(f"⚠️ Excel file not found at: {excel_path}")
-                logger.info("   Trying to load from embedded code...")
+                logger.debug(f"Excel file not found at: {excel_path}, using embedded mapping")
                 self._load_from_code()
         else:
-            logger.info("ℹ️ No Excel path provided, loading from embedded code...")
-            # Load from embedded data (will be populated from Excel)
+            logger.debug("No Excel path provided, loading from embedded code...")
             self._load_from_code()
         
-        logger.info(f"📊 ExcelMappingService initialized with {len(self.mapping_data)} entries")
+        logger.info(f"ExcelMappingService initialized with {len(self.mapping_data)} entries")
     
     def load_from_excel(self, excel_path: str) -> None:
         """
@@ -60,17 +83,13 @@ class ExcelMappingService:
         - Column G: allowed (tick column - will be filled)
         """
         try:
-            logger.info(f"📖 Reading Excel file: {excel_path}")
-            # Read Excel file
+            logger.info(f"Reading Excel file: {excel_path}")
             df = pd.read_excel(excel_path, sheet_name=0, header=0)
-            logger.info(f"   📊 Excel file read: {len(df)} rows, {len(df.columns)} columns")
-            logger.info(f"   📋 Original columns: {list(df.columns)}")
+            logger.info(f"Excel file read: {len(df)} rows, {len(df.columns)} columns")
             
-            # Ensure we have the right columns
             required_columns = ['Instrument/Category', 'hint/notice', 'Asset Tree Type1', 
                               'Asset Tree Type2', 'Asset Tree Type3', 'restriction']
             
-            # Rename columns if needed (handle different header names)
             column_mapping = {}
             for i, col in enumerate(df.columns):
                 col_lower = str(col).lower().strip()
@@ -88,15 +107,13 @@ class ExcelMappingService:
                     column_mapping[col] = 'restriction'
             
             df = df.rename(columns=column_mapping)
-            logger.info(f"   🔄 After column mapping: {list(df.columns)}")
             
-            # Convert to list of dictionaries
             self.mapping_data = []
             rows_processed = 0
             rows_skipped = 0
             for idx, row in df.iterrows():
                 entry = {
-                    'row_id': idx + 2,  # Excel row number (assuming header at row 1)
+                    'row_id': idx + 2,  # Excel row number (header row = 1)
                     'instrument_category': str(row.get('Instrument/Category', '')).strip(),
                     'hint_notice': str(row.get('hint/notice', '')).strip(),
                     'asset_tree_type1': str(row.get('Asset Tree Type1', '')).strip(),
@@ -105,36 +122,18 @@ class ExcelMappingService:
                     'restriction': str(row.get('restriction', '')).strip(),
                     'allowed': None  # Will be filled during analysis
                 }
-                
-                # Skip empty rows
                 if not entry['instrument_category'] or entry['instrument_category'] == 'nan':
                     rows_skipped += 1
                     continue
-                
                 self.mapping_data.append(entry)
                 rows_processed += 1
             
-            logger.info(f"   ✅ Processed {rows_processed} valid entries, skipped {rows_skipped} empty rows")
+            logger.info(f"Processed {rows_processed} valid entries, skipped {rows_skipped} empty rows")
+            # Don't build indexes immediately - build them lazily when first needed
+            self._indexes_built = False
             
-            # Build lookup indexes
-            self._build_lookup_indexes()
-            
-            logger.info(f"✅ Successfully loaded {len(self.mapping_data)} entries from Excel file: {excel_path}")
-            logger.info(f"📊 Built lookup index with {len(self.instrument_lookup)} instrument keys")
-            # Log sample of instrument names for debugging
-            if self.instrument_lookup:
-                sample_keys = list(self.instrument_lookup.keys())[:10]
-                logger.info(f"📋 Sample instrument names in lookup: {sample_keys}")
-            else:
-                logger.warning("⚠️ No instrument keys in lookup - Excel file may be empty or incorrectly formatted")
-            
-            # Log first few entries for verification
-            if self.mapping_data:
-                logger.debug(f"📝 First 3 entries loaded:")
-                for i, entry in enumerate(self.mapping_data[:3]):
-                    logger.debug(f"   [{i+1}] {entry.get('instrument_category', 'N/A')} -> Type1: {entry.get('asset_tree_type1', 'N/A')}")
-            else:
-                logger.error("❌ No entries loaded from Excel file! Check file format and columns.")
+            logger.info(f"Successfully loaded {len(self.mapping_data)} entries from Excel file")
+            logger.info("Lookup indexes will be built on first use")
             
         except Exception as e:
             logger.error(f"Error loading Excel file: {e}", exc_info=True)
@@ -146,23 +145,21 @@ class ExcelMappingService:
         This will be populated from the Excel file you provide.
         """
         try:
-            # Try to import embedded mapping data
             from ..utils.embedded_mapping import MAPPING_DATA
             self.mapping_data = MAPPING_DATA
-            self._build_lookup_indexes()
-            logger.info(f"✅ Excel mapping loaded from embedded code: {len(self.mapping_data)} entries")
+            self._indexes_built = False  # Build indexes lazily
+            logger.info(f"Excel mapping loaded from embedded code: {len(self.mapping_data)} entries")
             if len(self.mapping_data) == 0:
-                logger.warning("⚠️ Embedded mapping data is empty! Run load_excel_mapping.py to populate.")
+                logger.warning("Embedded mapping data is empty! Run load_excel_mapping.py to populate.")
         except ImportError as e:
-            # Fallback: empty mapping if embedded file doesn't exist
             self.mapping_data = []
-            self._build_lookup_indexes()
-            logger.warning(f"⚠️ Could not import embedded mapping: {e}")
-            logger.warning("   Excel mapping is empty - run load_excel_mapping.py to populate")
+            self._indexes_built = False
+            logger.warning(f"Could not import embedded mapping: {e}")
+            logger.warning("Excel mapping is empty - run load_excel_mapping.py to populate")
         except Exception as e:
-            logger.error(f"❌ Error loading embedded mapping: {e}", exc_info=True)
+            logger.error(f"Error loading embedded mapping: {e}")
             self.mapping_data = []
-            self._build_lookup_indexes()
+            self._indexes_built = False
     
     def _normalize_term(self, value: str) -> str:
         """Normalize a text value for fuzzy matching"""
@@ -198,13 +195,11 @@ class ExcelMappingService:
         for field in fields:
             if not field or field == 'nan':
                 continue
-            # split on typical separators and conjunctions
-            parts = re.split(r"[,/;]|\\band\\b|\\border\\b|\\bsowie\\b|\\n", field, flags=re.IGNORECASE)
+            parts = re.split(r"[,/;]|\band\b|\border\b|\bsowie\b|\n", field, flags=re.IGNORECASE)
             for part in parts:
                 part = part.strip()
                 if part:
                     candidates.append(part)
-                    # add simple plural/singular variants
                     if part.endswith('s') and len(part) > 4:
                         candidates.append(part[:-1])
                     elif len(part) > 4:
@@ -212,7 +207,11 @@ class ExcelMappingService:
         return candidates
 
     def _build_lookup_indexes(self) -> None:
-        """Build fast lookup indexes for matching"""
+        """Build fast lookup indexes for matching (lazy - only builds once)"""
+        if self._indexes_built:
+            return  # Already built
+        
+        logger.debug("Building lookup indexes...")
         self.instrument_lookup = {}
         self.asset_tree_lookup = {}
         self.synonym_lookup = {}
@@ -220,30 +219,24 @@ class ExcelMappingService:
         for entry in self.mapping_data:
             instrument = entry['instrument_category'].lower().strip()
 
-            # Build instrument lookup (handles variations)
             if instrument:
-                # Direct match
                 if instrument not in self.instrument_lookup:
                     self.instrument_lookup[instrument] = []
                 self.instrument_lookup[instrument].append(entry)
-                # Register normalized synonym for the instrument itself
                 self._add_synonym(instrument, entry)
 
-                # Also index by words (for partial matching)
                 words = re.findall(r'\w+', instrument)
                 for word in words:
-                    if len(word) > 3:  # Only index meaningful words
+                    if len(word) > 3:
                         if word not in self.instrument_lookup:
                             self.instrument_lookup[word] = []
                         if entry not in self.instrument_lookup[word]:
                             self.instrument_lookup[word].append(entry)
                         self._add_synonym(word, entry)
 
-            # Add additional synonyms using other descriptive fields
             for candidate in self._extract_candidate_synonyms(entry):
                 self._add_synonym(candidate, entry)
 
-            # Build asset tree lookup
             type1 = entry['asset_tree_type1'].lower().strip()
             type2 = entry['asset_tree_type2'].lower().strip()
             type3 = entry['asset_tree_type3'].lower().strip()
@@ -259,41 +252,37 @@ class ExcelMappingService:
                             self.asset_tree_lookup[type1][type2][type3] = []
                         self.asset_tree_lookup[type1][type2][type3].append(entry)
                     else:
-                        # Store at type2 level if no type3
                         if 'default' not in self.asset_tree_lookup[type1][type2]:
                             self.asset_tree_lookup[type1][type2]['default'] = []
                         self.asset_tree_lookup[type1][type2]['default'].append(entry)
                 else:
-                    # Store at type1 level if no type2
                     if 'default' not in self.asset_tree_lookup[type1]:
                         self.asset_tree_lookup[type1]['default'] = {}
                     if 'default' not in self.asset_tree_lookup[type1]['default']:
                         self.asset_tree_lookup[type1]['default']['default'] = []
                     self.asset_tree_lookup[type1]['default']['default'].append(entry)
+        
+        self._indexes_built = True
+        logger.debug("Lookup indexes built")
     
     def find_matching_entries(self, extracted_term: str, context: Optional[str] = None) -> List[Dict]:
+        """Find matching entries - builds indexes if not already built"""
+        if not self._indexes_built:
+            self._build_lookup_indexes()
         """
         Find matching entries for an extracted term from PDF.
-        
-        Args:
-            extracted_term: Term extracted by OpenAI from PDF
-            context: Surrounding context (for negative logic detection)
-        
-        Returns:
-            List of matching mapping entries
+        Conservative filter: prefer specific over generic; avoid generic-only matches.
         """
         extracted_term = extracted_term.lower().strip()
         matches = []
         normalized = self._normalize_term(extracted_term)
 
-        logger.debug(f"🔍 Searching for matches for: '{extracted_term}' (lookup has {len(self.instrument_lookup)} entries)")
+        logger.info(f"🔍 Searching for matches for: '{extracted_term}' (lookup has {len(self.instrument_lookup)} entries)")
 
-        # Direct match
         if extracted_term in self.instrument_lookup:
             matches.extend(self.instrument_lookup[extracted_term])
-            logger.debug(f"✅ Direct match found: {len(matches)} entries")
+            logger.info(f"✅ Direct match found: {len(matches)} entries")
         
-        # Partial match - check if extracted term contains or is contained in mapping terms
         if not matches:
             for instrument, entries in self.instrument_lookup.items():
                 if instrument in extracted_term or extracted_term in instrument:
@@ -301,32 +290,28 @@ class ExcelMappingService:
                         if entry not in matches:
                             matches.append(entry)
             if matches:
-                logger.debug(f"✅ Partial match found: {len(matches)} entries")
+                logger.info(f"✅ Partial match found: {len(matches)} entries")
         
-        # Word-based matching (for cases like "Pfandbriefe" matching "Pfandbrief")
         if not matches:
             extracted_words = set(re.findall(r'\w+', extracted_term))
             for instrument, entries in self.instrument_lookup.items():
                 instrument_words = set(re.findall(r'\w+', instrument))
-                # If significant overlap in words
                 if len(extracted_words & instrument_words) >= min(2, len(extracted_words), len(instrument_words)):
                     for entry in entries:
                         if entry not in matches:
                             matches.append(entry)
             if matches:
-                logger.debug(f"✅ Word-based match found: {len(matches)} entries")
+                logger.info(f"✅ Word-based match found: {len(matches)} entries")
         
-        if not matches:
-            logger.warning(f"⚠️ No matches found for '{extracted_term}'. Available entries: {list(self.instrument_lookup.keys())[:10]}...")
-
-            # Try normalized synonym lookup (semantic style)
-            if normalized and normalized in self.synonym_lookup:
+        if not matches and normalized:
+            # Only log warning if Excel mapping has data (to reduce noise when empty)
+            if len(self.instrument_lookup) > 0:
+                logger.debug(f"⚠️ No matches found for '{extracted_term}'.")
+            if normalized in self.synonym_lookup:
                 for entry in self.synonym_lookup[normalized]:
                     if entry not in matches:
                         matches.append(entry)
-
-            # Fuzzy match against known synonyms if still nothing
-            if not matches and normalized:
+            if not matches:
                 synonym_keys = list(self.synonym_lookup.keys())
                 close = get_close_matches(normalized, synonym_keys, n=5, cutoff=0.75)
                 for key in close:
@@ -334,26 +319,91 @@ class ExcelMappingService:
                         if entry not in matches:
                             matches.append(entry)
                 if close:
-                    logger.debug(f"✅ Fuzzy synonym match for '{extracted_term}' -> {close}")
+                    logger.info(f"✅ Fuzzy synonym match for '{extracted_term}' -> {close}")
+
+        # --- NEW: prefer specific matches over generic parents ---
+        if matches:
+            exact = [e for e in matches if _normalize_simple(e['instrument_category']) == _normalize_simple(extracted_term)]
+            if exact:
+                matches = exact
+            else:
+                non_generic = [e for e in matches if not _is_generic_parent(e['instrument_category'])]
+                if non_generic:
+                    matches = non_generic
 
         if not matches and normalized:
-            logger.warning(f"⚠️ Still no matches after fuzzy search for '{extracted_term}' (normalized='{normalized}')")
+            # Only log warning if Excel mapping has data (to reduce noise when empty)
+            if len(self.instrument_lookup) > 0:
+                logger.debug(f"⚠️ Still no matches after fuzzy search for '{extracted_term}' (normalized='{normalized}')")
 
         return matches
     
     def get_all_entries(self) -> List[Dict]:
-        """Get all mapping entries"""
+        """Get all mapping data"""
         return self.mapping_data
     
-    def update_allowed_status(self, row_id: int, allowed: bool, reason: str = "") -> None:
+    def get_term_map(self) -> Dict[str, Dict]:
+        """Get term map - builds indexes if not already built"""
+        if not self._indexes_built:
+            self._build_lookup_indexes()
         """
-        Update the allowed status for a specific entry.
+        Build a term_map dictionary for conservative classification.
         
-        Args:
-            row_id: Excel row number (1-indexed)
-            allowed: Whether investment is allowed
-            reason: Reason/evidence for the decision
+        Returns:
+            Dict mapping term -> {"primary": bool, "specificity": int, "parent": str}
+            where:
+            - primary: True if this is a primary instrument category (not a synonym)
+            - specificity: Higher number = more specific (e.g., "covered bond" = 3, "bond" = 1)
+            - parent: Parent category if applicable (e.g., "bond" for "covered bond")
         """
+        term_map = {}
+        
+        # Build term map from all entries
+        for entry in self.mapping_data:
+            instrument_category = entry.get('instrument_category', '').strip()
+            if not instrument_category:
+                continue
+            
+            # Determine specificity based on how specific the term is
+            # More words = more specific (e.g., "covered bond" = 2, "bond" = 1)
+            words = instrument_category.split()
+            specificity = len(words)
+            
+            # Check if this is a generic parent term
+            is_generic = _is_generic_parent(instrument_category)
+            
+            # Determine parent category from asset tree
+            parent = None
+            type1 = entry.get('asset_tree_type1', '').strip().lower()
+            type2 = entry.get('asset_tree_type2', '').strip().lower()
+            
+            # If we have type2, type1 is the parent
+            if type2:
+                parent = type1
+            # If we only have type1 and it's generic, it might be a parent
+            elif type1 and is_generic:
+                parent = None  # Generic terms are usually top-level
+            
+            # Add to term_map
+            term_map[instrument_category] = {
+                "primary": True,  # All entries are primary
+                "specificity": specificity,
+                "parent": parent
+            }
+            
+            # Also add normalized version for matching
+            normalized = _normalize_simple(instrument_category)
+            if normalized != instrument_category.lower():
+                term_map[normalized] = {
+                    "primary": False,  # Normalized version is not primary
+                    "specificity": specificity,
+                    "parent": parent
+                }
+        
+        return term_map
+    
+    def update_allowed_status(self, row_id: int, allowed: bool, reason: str = "") -> None:
+        """Update the allowed status for a specific entry."""
         for entry in self.mapping_data:
             if entry['row_id'] == row_id:
                 entry['allowed'] = allowed
@@ -362,97 +412,99 @@ class ExcelMappingService:
     
     def update_entry_by_instrument(self, instrument: str, allowed: bool, reason: str = "") -> None:
         """
-        Update allowed status for all entries matching an instrument.
-        
-        Args:
-            instrument: Instrument/category name
-            allowed: Whether investment is allowed
-            reason: Reason/evidence for the decision
+        STRICT: Only update rows whose Instrument/Category equals the instrument (case-insensitive).
+        Prevents accidental bulk updates from fuzzy matches.
         """
-        matches = self.find_matching_entries(instrument)
-        for entry in matches:
-            entry['allowed'] = allowed
-            entry['reason'] = reason
+        needle = _normalize_simple(instrument)
+        for entry in self.mapping_data:
+            if _normalize_simple(entry.get('instrument_category')) == needle:
+                entry['allowed'] = allowed
+                entry['reason'] = reason
     
     def detect_negative_logic(self, text: str, term: str) -> Tuple[bool, str]:
         """
-        Detect negative logic in text.
-        Example: "abc funds are permitted" means NOT allowed (negative logic).
-        
-        Args:
-            text: Full text or context snippet
-            term: The term being analyzed
-        
-        Returns:
-            Tuple of (is_negative, explanation)
+        Detect negative logic in text. (Kept for backward compatibility)
+        IMPORTANT: This should NOT flip logic for items in "Zulässige Anlagen" sections.
         """
-        text_lower = text.lower()
-        term_lower = term.lower()
+        text_lower = (text or "").lower()
+        term_lower = (term or "").lower()
         
-        # Patterns that indicate negative logic
+        # CRITICAL: Check for German section headers FIRST - these override negative logic detection
+        # If the text contains "Zulässige Anlagen" (Permitted Investments), it's positive logic
+        german_positive_sections = [
+            r'zulässige\s+anlagen',
+            r'zulässige\s+anlageinstrumente',
+            r'erlaubt|zugelassen|berechtigt|darf',
+            r'ja\s*[,\|:]',  # "ja" followed by comma, pipe, or colon (list format)
+        ]
+        
+        # Check if we're in a positive German section
+        for pattern in german_positive_sections:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                return False, f"Positive German section detected: {pattern} - DO NOT flip logic"
+        
+        # Check for German prohibited sections
+        german_negative_sections = [
+            r'unzulässige\s+anlagen',
+            r'unzulässige\s+anlageinstrumente',
+            r'verboten|nicht\s+erlaubt|ausgeschlossen|darf\s+nicht',
+            r'nein\s*[,\|:]',  # "nein" followed by comma, pipe, or colon (list format)
+        ]
+        
+        for pattern in german_negative_sections:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                return True, f"Negative German section detected: {pattern}"
+        
         negative_patterns = [
             r'not\s+(?:permitted|allowed|authorized|approved)',
             r'prohibited|forbidden|restricted|excluded|banned',
             r'cannot|may\s+not|shall\s+not',
             r'except|excluding|unless',
         ]
-        
-        # Patterns that indicate positive logic
         positive_patterns = [
             r'(?:permitted|allowed|authorized|approved)',
             r'may\s+invest|can\s+invest',
             r'investments?\s+(?:are|is)\s+(?:permitted|allowed)',
         ]
-        
-        # Check for negative patterns near the term
         term_pos = text_lower.find(term_lower)
         if term_pos != -1:
-            # Extract context around the term (100 chars before and after)
-            start = max(0, term_pos - 100)
-            end = min(len(text_lower), term_pos + len(term_lower) + 100)
+            start = max(0, term_pos - 200)  # Increased context window
+            end = min(len(text_lower), term_pos + len(term_lower) + 200)
             context = text_lower[start:end]
             
-            # Check for negative logic
-            for pattern in negative_patterns:
-                if re.search(pattern, context):
-                    return True, f"Negative logic detected: {pattern}"
-            
-            # Check for positive logic
+            # Check for positive patterns FIRST (they override negative)
             for pattern in positive_patterns:
                 if re.search(pattern, context):
                     return False, f"Positive logic detected: {pattern}"
-        
-        # Default: no negative logic detected
+            
+            # Then check for negative patterns
+            for pattern in negative_patterns:
+                if re.search(pattern, context):
+                    return True, f"Negative logic detected: {pattern}"
         return False, "No negative logic detected"
     
     def export_to_excel(self, output_path: str) -> str:
         """
         Export ALL mapping data with filled ticks to Excel file.
-        This exports all 137 entries, regardless of whether they were matched.
-        
-        Args:
-            output_path: Path to save the Excel file
-        
-        Returns:
-            Path to saved Excel file
         """
         try:
-            # Create DataFrame from ALL mapping data (all 137 entries)
             df_data = []
             total_entries = len(self.mapping_data)
             processed_count = 0
             
             for entry in self.mapping_data:
-                # Determine allowed status
                 allowed_status = entry.get('allowed')
                 if allowed_status is True:
                     allowed_display = '✓'
+                    status_display = 'Allowed'
                     processed_count += 1
                 elif allowed_status is False:
-                    allowed_display = '✗'  # Show X for explicitly prohibited
+                    allowed_display = '✗'
+                    status_display = 'Prohibited'
                     processed_count += 1
                 else:
-                    allowed_display = ''  # Empty if not found or uncertain
+                    allowed_display = ''
+                    status_display = 'Review'
                 
                 df_data.append({
                     'Instrument/Category': entry['instrument_category'],
@@ -462,34 +514,26 @@ class ExcelMappingService:
                     'Asset Tree Type3': entry['asset_tree_type3'],
                     'restriction': entry['restriction'],
                     'allowed': allowed_display,
+                    'status': status_display,   # NEW
                     'reason': entry.get('reason', '')
                 })
             
             df = pd.DataFrame(df_data)
-            
             logger.info(f"EXCEL EXPORT: Exporting {total_entries} total entries ({processed_count} processed, {total_entries - processed_count} unprocessed)")
             
             if total_entries != 137:
                 logger.warning(f"Expected 137 entries but found {total_entries}. Make sure you've loaded the full Excel file!")
             
-            # Write to Excel with formatting
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Mapping Results', index=False)
-                
-                # Get the worksheet for formatting
-                worksheet = writer.sheets['Mapping Results']
-                
-                # Style headers
                 from openpyxl.styles import PatternFill, Font, Alignment
+                worksheet = writer.sheets['Mapping Results']
                 header_fill = PatternFill(start_color="FF8C00", end_color="FF8C00", fill_type="solid")
                 white_font = Font(color="FFFFFF", bold=True)
-                
                 for cell in worksheet[1]:
                     cell.fill = header_fill
                     cell.font = white_font
                     cell.alignment = Alignment(horizontal="center", vertical="center")
-                
-                # Auto-adjust column widths
                 for column in worksheet.columns:
                     max_length = 0
                     column_letter = column[0].column_letter
@@ -511,16 +555,7 @@ class ExcelMappingService:
     async def search_document_with_llm(self, document_text: str, llm_service, llm_provider: str, model: str) -> Dict:
         """
         Search document for ALL Excel entries (Column A terms) using LLM with OCRD IDs and semantic matching.
-        Uses LLM to semantically match terms across the entire document, not just exact word matches.
-        
-        Args:
-            document_text: Full text of the document to search
-            llm_service: LLMService instance for analysis
-            llm_provider: LLM provider name
-            model: Model name to use
-        
-        Returns:
-            Dictionary with statistics about matches found
+        DEMO-SAFE: conservative defaults, explicit evidence only, no parent roll-up without quantifier.
         """
         matches_found = 0
         allowed_found = 0
@@ -528,7 +563,6 @@ class ExcelMappingService:
         
         logger.info(f"🔍 Searching document for {len(self.mapping_data)} Excel entries using LLM semantic analysis...")
         
-        # Build OCRD taxonomy for reference
         ocrd_taxonomy = {
             "bond": ["covered_bond", "asset_backed_security", "mortgage_bond", "pfandbrief", "public_mortgage_bond", 
                     "convertible_bond_regular", "convertible_bond_coco", "reverse_convertible", "credit_linked_note", 
@@ -542,8 +576,9 @@ class ExcelMappingService:
                     "mixed_allocation_fund", "moneymarket_fund", "private_equity_fund", "real_estate_fund", "speciality_fund"],
             "deposit": ["call_money", "cash", "time_deposit"],
             "future": ["bond_future", "commodity_future", "currency_future", "fund_future", "index_future", "single_stock_future"],
-            "option": ["bond_future_option", "commodity_future_option", "commodity_option", "currency_future_option", 
-                      "currency_option", "fund_future_option", "fund_option", "index_future_option", "index_option", "stock_option"],
+            "option": ["bond_future_option", "commodity_future_option", "commodity_option", 
+                      "currency_future_option", "currency_option", "fund_future_option", "fund_option", 
+                      "index_future_option", "index_option", "stock_option"],
             "warrant": ["commodity_warrant", "currency_warrant", "fund_warrant", "index_warrant", "stock_warrant"],
             "commodity": ["precious_metal"],
             "forex": ["forex_outright", "forex_spot"],
@@ -553,55 +588,40 @@ class ExcelMappingService:
             "real_estate": [],
             "rights": ["subscription_rights"]
         }
-        
-        # Convert OCRD taxonomy to a flat list for the prompt
         all_ocrd_ids = []
         for category, ids in ocrd_taxonomy.items():
             all_ocrd_ids.extend([f"{category}.{id}" for id in ids])
-            if not ids:  # Add category itself if no sub-IDs
+            if not ids:
                 all_ocrd_ids.append(category)
-        
-        ocrd_ids_text = "\n".join([f"- {id}" for id in all_ocrd_ids[:50]])  # Limit to first 50 for prompt size
-        
+        ocrd_ids_text = "\n".join([f"- {id}" for id in all_ocrd_ids[:50]])
+
         for entry_idx, entry in enumerate(self.mapping_data, 1):
             instrument_name = entry['instrument_category'].strip()
             if not instrument_name or instrument_name == 'nan':
                 continue
             
             logger.info(f"🔍 [{entry_idx}/{len(self.mapping_data)}] Analyzing: '{instrument_name}'")
-            
-            # Get OCRD IDs from the entry (Asset Tree Type1, Type2, Type3)
             type1 = entry.get('asset_tree_type1', '').strip()
             type2 = entry.get('asset_tree_type2', '').strip()
             type3 = entry.get('asset_tree_type3', '').strip()
-            
-            # Build OCRD ID string for this entry
             ocrd_ids_for_entry = []
-            if type1:
-                ocrd_ids_for_entry.append(type1)
+            if type1: ocrd_ids_for_entry.append(type1)
             if type2 and type2 != 'nan':
                 ocrd_ids_for_entry.append(f"{type1}.{type2}" if type1 else type2)
             if type3 and type3 != 'nan':
-                # Type3 can have multiple comma-separated values
-                type3_parts = [p.strip() for p in type3.split(',')]
-                for part in type3_parts:
+                for part in [p.strip() for p in type3.split(',')]:
                     if part and part != 'nan':
                         ocrd_ids_for_entry.append(part)
-            
             ocrd_ids_str = ", ".join(ocrd_ids_for_entry) if ocrd_ids_for_entry else "N/A"
             logger.info(f"   📋 OCRD IDs to check: {ocrd_ids_str}")
             
-            # Use LLM to semantically search the entire document
             try:
                 import json
-                
-                # Split document into chunks if too large (max 50k chars per chunk for LLM)
-                max_chunk_size = 50000
-                document_chunks = []
+                max_chunk_size = 200000
                 if len(document_text) > max_chunk_size:
-                    # Split into overlapping chunks
                     chunk_size = max_chunk_size
-                    overlap = 5000  # 5k overlap to avoid missing context
+                    overlap = 5000
+                    document_chunks = []
                     start = 0
                     while start < len(document_text):
                         end = min(start + chunk_size, len(document_text))
@@ -612,199 +632,231 @@ class ExcelMappingService:
                     document_chunks = [document_text]
                     logger.info(f"   📄 Processing document as single chunk ({len(document_text)} chars)")
                 
-                # Analyze each chunk
                 found_in_document = False
                 allowed_status = None
                 reason_text = ""
-                semantic_match = instrument_name  # Default to original name
-                ocrd_match = "N/A"  # Default OCRD match
+                semantic_match = instrument_name
+                ocrd_match = "N/A"
                 
                 for chunk_idx, chunk in enumerate(document_chunks):
-                    logger.info(f"   🔎 Checking chunk {chunk_idx + 1}/{len(document_chunks)} (size: {len(chunk)} chars)")
-                    llm_prompt = f"""You are analyzing an investment policy document. I need you to:
+                    logger.info(f"   Checking chunk {chunk_idx + 1}/{len(document_chunks)} (size: {len(chunk)} chars)")
+                    try:
+                        # Add timeout for each LLM call to prevent hanging
+                        llm_prompt = f"""You are classifying whether a specific instrument is ALLOWED or PROHIBITED in an investment policy document. Your PRIMARY goal is to find ALLOWED items - they are just as important as prohibited ones.
 
-1. Check if the term "{instrument_name}" OR any semantically similar/variant terms appear in the document
-2. Check if any of these OCRD IDs/rules are mentioned: {ocrd_ids_str}
-3. Use SEMANTIC MATCHING - look for terms that mean the same thing, even if worded differently
+**CRITICAL: PRIORITIZE FINDING ALLOWED ITEMS FIRST**
+Your first priority is to actively search for and identify when this instrument is ALLOWED. Many documents have comprehensive lists of allowed instruments - you must find them.
 
-CRITICAL: OCRD IDs are category/type identifiers. Match them SEMANTICALLY, not exactly:
-- OCRD ID "covered_bond" should match: "covered bonds", "Pfandbriefe", "Pfandbrief", "covered bond securities", "gedeckte Anleihen"
-- OCRD ID "plain_vanilla_bond" should match: "plain vanilla bonds", "standard bonds", "regular bonds", "conventional bonds"
-- OCRD ID "equity_fund" should match: "equity funds", "stock funds", "Aktienfonds", "equity investment funds"
-- OCRD ID "common_stock" should match: "common stocks", "ordinary shares", "Stammaktien", "common equity"
-- OCRD ID "fixed_income_fund" should match: "fixed income funds", "bond funds", "Rentenfonds", "debt funds"
-- OCRD ID "moneymarket_fund" should match: "money market funds", "MMF", "Geldmarktfonds", "cash funds"
-- OCRD ID "real_estate_fund" should match: "real estate funds", "property funds", "Immobilienfonds", "REIT funds"
-- OCRD ID "precious_metal" should match: "precious metals", "gold", "silver", "Edelmetalle", "bullion"
+**STEP 1: SEARCH FOR ALLOWED EVIDENCE (HIGHEST PRIORITY)**
+Actively look for these patterns that indicate the instrument is ALLOWED. **THE MOST COMMON PATTERN IS "Ja/yes" IN TABLES:**
 
-Examples of semantic matching:
-- "bonds" = "fixed income securities" = "debt instruments" = "Anleihen" (German) = "Schuldverschreibungen"
-- "stocks" = "equities" = "shares" = "Aktien" (German) = "Wertpapiere"
-- "funds" = "investment funds" = "mutual funds" = "Fonds" (German) = "Investmentfonds"
-- "derivatives" = "options" = "futures" = "Derivate" (German) = "Termingeschäfte"
-- "FX Forwards" = "forex forwards" = "foreign exchange forwards" = "FX" = "forex" = "currency forwards"
-- "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures" = "currency futures contracts"
+**PRIMARY INDICATOR: "Ja/yes" = ALLOWED (allowed=true)**
+- **CRITICAL**: If you see "{instrument_name}" followed by "Ja/yes", "Ja / yes", "Ja/ yes", "Ja /yes", or just "Ja" or "yes" → it is ALLOWED (allowed=true)
+- **CRITICAL**: If you see "{instrument_name}" in a table row where the "Ja/yes" column is marked → it is ALLOWED (allowed=true)
+- **CRITICAL**: Even if table structure is broken, if "{instrument_name}" appears near "Ja/yes", "Ja", "yes", "ja", or "erlaubt" → it is ALLOWED (allowed=true)
+- **CRITICAL**: Format variations to recognize: "Ja/yes", "Ja / yes", "Ja/ yes", "Ja /yes", "Ja", "yes", "ja" (all mean ALLOWED)
+- Examples: "Staatsanleihen / Government Bonds: Ja/yes" → ALLOWED
+- Examples: "Covered Bonds / Covered Bonds: Ja/yes" → ALLOWED
+- Examples: "Aktienfonds / Equity-Funds: Ja/yes" → ALLOWED
+- Examples: "Delta-1 Zertifikate / Delta-1 Certificates: Ja/yes" → ALLOWED
+- Examples: "Corporate Bonds: Ja" → ALLOWED
+- Examples: "Financial-Anleihen: yes" → ALLOWED
 
-OCRD Taxonomy Reference (first 50 IDs):
+**OTHER ALLOWED PATTERNS:**
+- "allowed", "permitted", "authorized", "approved", "may invest", "can invest", "eligible"
+- German: "erlaubt", "zugelassen", "berechtigt", "darf", "zulässig"
+- German: "erlaubt/allowed" (bilingual format) → ALLOWED
+- An "X" (cross) mark in ANY context - tables, lists, inline text, checkboxes
+- "FX Forwards are allowed", "currency futures are permitted", "forex is authorized"
+- Lists of permitted instruments (especially under "Zulässige Anlagen")
+- Positive statements: "investments are permitted in...", "the fund may invest in...", "investments in X are allowed"
+- **MOST IMPORTANT**: If the instrument appears in a "Zulässige Anlagen" (Permitted Investments) section → it is ALLOWED
+
+**STEP 2: THEN SEARCH FOR PROHIBITED EVIDENCE**
+Look for these patterns that indicate the instrument is PROHIBITED:
+- "prohibited", "forbidden", "not allowed", "restricted", "excluded", "may not invest", "not eligible"
+- German: "verboten", "nicht erlaubt", "ausgeschlossen", "darf nicht", "nein", "unzulässig"
+- A "-" (hyphen/dash) mark in ANY context
+- "investments in X are not allowed", "prohibited from investing in..."
+- **MOST IMPORTANT**: If the instrument appears in an "Unzulässige Anlagen" (Prohibited Investments) section → it is PROHIBITED
+
+**CRITICAL: GERMAN TABLE FORMAT (HIGHEST PRIORITY - MOST COMMON FORMAT)**
+Many German investment documents use tables with "Ja/yes" and "nein/no" classifications. This is THE PRIMARY format for identifying allowed/prohibited status.
+
+**TABLE FORMAT RECOGNITION:**
+- Look for tables with columns or classifications: "Ja/yes", "nein/no", "Relevant", "Detailrestriktionen"
+- Table may appear as: "Instrument Name | nein/no | Ja/yes | Detailrestriktionen"
+- Or in text format: "Staatsanleihen / Government Bonds: Ja/yes"
+- Or as a list: "Aktien: nein/no, Covered Bonds: Ja/yes"
+- Or in structured format: "Instrument Name" followed by "Ja/yes" or "nein/no" in the same row
+- **CRITICAL**: Even if the table structure is broken in text extraction, look for patterns like:
+  * "{instrument_name}" followed by "Ja/yes" or "Ja / yes" → ALLOWED
+  * "{instrument_name}" followed by "nein/no" or "nein / no" → NOT ALLOWED
+  * "{instrument_name}" with "Ja/yes" anywhere in the same sentence/row → ALLOWED
+  * Rows where you can identify "Ja/yes" or "nein/no" classifications
+
+**INTERPRETATION RULES FOR TABLES (APPLY TO EACH ROW):**
+- **CRITICAL RULE #1**: "Ja/yes" or "Ja / yes" next to instrument name = ALLOWED (allowed=true) - THIS IS THE MOST IMPORTANT RULE
+- **CRITICAL RULE #2**: "X" (cross) in "ja" column = ALLOWED (allowed=true) - SECOND MOST IMPORTANT
+- "nein/no" or "nein / no" next to instrument name = NOT ALLOWED (allowed=false)
+- "X" (cross) in "nein" column = NOT ALLOWED (allowed=false)
+- "✓" (checkmark) in "ja" column = ALLOWED (allowed=true)
+- "-" (hyphen/dash) in either column = typically NOT ALLOWED
+- **MOST IMPORTANT**: If you see "{instrument_name}" followed by "Ja/yes" → that instrument is ALLOWED (allowed=true)
+- **MOST IMPORTANT**: If you see "{instrument_name}" in a table row with "ja: X" or "X" in the "ja" column position → that instrument is ALLOWED (allowed=true)
+
+**OTHER GERMAN PATTERNS:**
+- **"Ja/yes" or "Ja / yes" = ALLOWED (allowed=true)** - This is the most common pattern in German investment documents
+- **"nein/no" or "nein / no" = NOT ALLOWED (allowed=false)**
+- "ja" = yes/allowed, "nein" = no/not allowed
+- German keywords: "erlaubt", "zugelassen", "berechtigt", "darf" = allowed/permitted
+- German keywords: "erlaubt/allowed" (bilingual) = allowed/permitted
+- German keywords: "verboten", "nicht erlaubt", "ausgeschlossen", "darf nicht" = prohibited/not allowed
+- German keywords: "nicht erlaubt/not allowed" (bilingual) = prohibited/not allowed
+- Examples in text: "FX Forwards X", "Derivatives (X)", "Options: -", "Bonds -", "Aktien ✓"
+- Examples in tables: "Staatsanleihen: Ja/yes" → ALLOWED, "Swaptions: nein/no" → NOT ALLOWED
+- When you see X or - marks in any context, interpret "X" as allowed=true and "-" as allowed=false
+
+**CRITICAL: GERMAN SECTION HEADERS WITH LISTS**
+- When you see "Zulässige Anlagen" or "Zulässige Anlageinstrumente" section → ALL items in that list are allowed=true
+- When you see "Unzulässige Anlagen" or "Unzulässige Anlageinstrumente" section → ALL items in that list are allowed=false
+- If the instrument you're checking appears in one of these sections, classify it accordingly
+- These lists can be formatted as bullet points, numbered lists, comma-separated items, or table rows
+- **VERIFICATION**: Count the items and ensure you check all of them
+
+**INSTRUMENT TO CHECK:**
+"{instrument_name}"
+
+**OCRD IDs (semantic categories) to consider:**
+{ocrd_ids_str}
+
+**CLASSIFICATION RULES:**
+1. Work at the SENTENCE, BULLET, or TABLE ROW level
+2. **CRITICAL**: If you find "{instrument_name}" (or a semantic match) followed by "Ja/yes" in the same row/sentence → set "allowed": true
+3. **CRITICAL**: If you find "{instrument_name}" (or a semantic match) followed by "nein/no" in the same row/sentence → set "allowed": false
+4. If you find explicit evidence the instrument is ALLOWED (any pattern) → set "allowed": true
+5. If you find explicit evidence the instrument is PROHIBITED (any pattern) → set "allowed": false
+6. If the sentence is conditional (e.g., "subject to", "up to", "provided that") → still set allowed=true but include condition in reason
+7. If you find the instrument mentioned but cannot determine allowed/prohibited status → set "found": true but omit "allowed" key
+8. **IMPORTANT**: Do NOT infer from broader categories - only classify if the SPECIFIC instrument is mentioned
+9. **IMPORTANT**: For generic parent categories (bonds, equities, derivatives), only classify as allowed if the sentence explicitly includes "all", "any", or "including but not limited to"
+10. **SEMANTIC MATCHING**: If "{instrument_name}" doesn't appear exactly but a related term appears with "Ja/yes", consider it a match (e.g., "Government Bonds: Ja/yes" matches "government_bond" or "sovereign_bond")
+11. **CRITICAL: PARENT CATEGORIES VS SUBTYPES**: If you see a parent category (e.g., "Bonds", "Renten") marked as "Ja/yes", you MUST still check each subtype separately. A parent category being allowed does NOT mean all subtypes are allowed. Check the table for subtype rows - if a subtype shows "nein/no", it is NOT ALLOWED regardless of parent category status.
+
+**EXAMPLES (REAL DOCUMENT PATTERNS):**
+- If document says "{instrument_name} / {{english_name}}: Ja/yes" → {{"found": true, "allowed": true, "reason": "{instrument_name}: Ja/yes"}}
+- If document says "{instrument_name}: Ja/yes" → {{"found": true, "allowed": true, "reason": "{instrument_name}: Ja/yes"}}
+- If document says "{instrument_name} / {{english_name}}: nein/no" → {{"found": true, "allowed": false, "reason": "{instrument_name}: nein/no"}}
+- If document says "{instrument_name} X" or "{instrument_name} | ja: X" → {{"found": true, "allowed": true, "reason": "{instrument_name} X (in ja column)"}}
+- If document says "{instrument_name} are allowed" or "{instrument_name}: erlaubt/allowed" → {{"found": true, "allowed": true, "reason": "{instrument_name} are allowed"}}
+- If document says "{instrument_name} are prohibited" or "{instrument_name}: nicht erlaubt/not allowed" → {{"found": true, "allowed": false, "reason": "{instrument_name} are prohibited"}}
+- If document says "{instrument_name}" in "Zulässige Anlagen" section → {{"found": true, "allowed": true, "reason": "Listed in Zulässige Anlagen section"}}
+- If document says "{instrument_name}" in "Unzulässige Anlagen" section → {{"found": true, "allowed": false, "reason": "Listed in Unzulässige Anlagen section"}}
+- **CRITICAL EXAMPLE**: If you see "Staatsanleihen / Government Bonds: Ja/yes" and you're checking "Government Bonds" → {{"found": true, "allowed": true, "reason": "Staatsanleihen / Government Bonds: Ja/yes"}}
+
+**OCRD Taxonomy (subset):**
 {ocrd_ids_text}
 
-Document excerpt:
-{chunk[:40000]}
+**Document excerpt to search:**
+{chunk[:200000]}
 
-Instructions:
-- Search for "{instrument_name}" OR semantically equivalent terms (synonyms, translations, variations, plural forms)
-- Search for OCRD IDs: {ocrd_ids_str} - match them SEMANTICALLY to what appears in the document
-  * Don't require exact OCRD ID names - match the CONCEPT/CATEGORY
-  * "covered_bond" concept matches "Pfandbriefe", "covered bonds", "gedeckte Anleihen", etc.
-  * "equity_fund" concept matches "Aktienfonds", "stock funds", "equity investment funds", etc.
-
-**CRITICAL: DO NOT OVER-GENERALIZE RULES**
-- A rule about "securities with equity character" does NOT mean ALL bonds are allowed
-- A rule about "equity index options" does NOT mean ALL convertible bonds are allowed
-- A rule about "unlisted equities" does NOT mean ALL debt instruments are allowed
-- ONLY match if the SPECIFIC instrument name or a DIRECT synonym is mentioned in the SAME context as the rule
-- If the document says "securities with equity character are allowed", this ONLY applies to instruments that are explicitly described as having "equity character" - NOT to regular bonds, mortgage bonds, or other debt instruments
-- If you find a general rule but the specific instrument "{instrument_name}" is NOT mentioned in that context, set "found": false
-
-**MATCHING REQUIREMENTS:**
-- The instrument name "{instrument_name}" OR a direct synonym must appear in the SAME sentence or paragraph as the rule
-- The rule must explicitly mention the instrument type, not just a broader category
-- Example: If document says "convertible bonds are allowed" → match for "convertible_bond" instruments
-- Example: If document says "securities with equity character are allowed" → ONLY match instruments that are explicitly described as having equity character, NOT all bonds
-
-- If found, determine if it's ALLOWED or PROHIBITED based on context
-- **PRIORITY: Look for ALLOWED keywords FIRST** - these are just as important as prohibited items:
-  - "permitted", "allowed", "authorized", "approved", "may invest", "can invest", "darf", "erlaubt" = ALLOWED
-  - "FX Forwards are allowed", "currency futures are permitted", "forex is authorized" = ALLOWED
-  - Lists of permitted instruments = ALLOWED
-- Then look for PROHIBITED keywords:
-  - "prohibited", "forbidden", "not allowed", "restricted", "excluded", "verboten", "nicht erlaubt" = PROHIBITED
-- **CRITICAL: If document explicitly states an instrument is "allowed" or "permitted", mark it as allowed=true. Do NOT default to "not allowed" unless explicitly prohibited.**
+**YOUR TASK:**
+1. **FIRST AND MOST IMPORTANT**: Search for "{instrument_name}" followed by "Ja/yes" or "Ja / yes" - this is the PRIMARY indicator of ALLOWED status
+2. Search for "{instrument_name}" in tables with "Ja/yes" classifications - these are ALLOWED
+3. Search for "{instrument_name}" with X marks in "ja" columns - these are ALLOWED
+4. Search for "{instrument_name}" in "Zulässige Anlagen" sections - these are ALLOWED
+5. Search for other positive language patterns (allowed, permitted, erlaubt, etc.)
+6. **THEN**: Search for "{instrument_name}" followed by "nein/no" - this indicates NOT ALLOWED
+7. Search for "{instrument_name}" in "Unzulässige Anlagen" sections - these are NOT ALLOWED
+8. Search for other negative language patterns (prohibited, verboten, etc.)
+9. If you find the instrument mentioned but cannot determine status, still set "found": true
+10. **CRITICAL**: Use exact quotes from the document as evidence in the "reason" field - include the "Ja/yes" or "nein/no" classification if present
 
 Respond with ONLY a JSON object:
 {{
   "found": true or false,
-  "semantic_match": "the term or phrase that semantically matches (if found)",
-  "ocrd_match": "which OCRD ID/category this matches (if applicable)",
-  "allowed": true or false (only if found),
-  "reason": "brief explanation"
-}}
-
-If the term or OCRD ID is NOT found in this chunk, set "found": false."""
-                    
-                    # Log the prompt being sent (truncated for readability)
-                    prompt_preview = llm_prompt[:500] + "..." if len(llm_prompt) > 500 else llm_prompt
-                    logger.info(f"   💬 Sending prompt to LLM (length: {len(llm_prompt)} chars)")
-                    logger.debug(f"   📝 Prompt preview: {prompt_preview}")
-                    logger.debug(f"   🎯 Searching for: '{instrument_name}' with OCRD IDs: {ocrd_ids_str}")
-                    
-                    # Call LLM to analyze using analyze_text method
-                    llm_response = await llm_service.analyze_text(llm_prompt)
-                    
-                    # Log the raw response
-                    logger.info(f"   🤖 LLM Response received (type: {type(llm_response).__name__})")
-                    if isinstance(llm_response, dict):
-                        logger.debug(f"   📥 Response keys: {list(llm_response.keys())}")
-                        if "error" not in llm_response:
-                            logger.debug(f"   📥 Response content: {json.dumps(llm_response, indent=2)[:500]}")
-                    
-                    # Parse LLM response
-                    if isinstance(llm_response, dict):
-                        if "error" in llm_response:
-                            # Skip this chunk if error, continue to next
-                            error_msg = llm_response.get("error", "Unknown error")
-                            logger.warning(f"   ⚠️ LLM error in chunk {chunk_idx + 1}: {error_msg}")
-                            continue
-                        elif "found" in llm_response and llm_response.get("found") is True:
-                            # Term found in this chunk
-                            found_in_document = True
-                            semantic_match = llm_response.get("semantic_match", instrument_name)
-                            ocrd_match = llm_response.get("ocrd_match", "N/A")
-                            logger.info(f"   ✅ FOUND in chunk {chunk_idx + 1}!")
-                            logger.info(f"      📝 Semantic match: '{semantic_match}'")
-                            if ocrd_match and ocrd_match != "N/A":
-                                logger.info(f"      🏷️ OCRD ID match: '{ocrd_match}'")
+  "semantic_match": "exact phrase that matched (if found)",
+  "ocrd_match": "OCRD ID/category if applicable or 'N/A'",
+  "allowed": true or false (include this key ONLY if you found explicit allowed/prohibited evidence),
+  "reason": "exact quote or evidence from document (verbatim copy, max 300 chars)"
+}}"""
+                        prompt_preview = llm_prompt[:500] + "..." if len(llm_prompt) > 500 else llm_prompt
+                        logger.info(f"   Sending prompt to LLM (length: {len(llm_prompt)} chars)")
+                        logger.debug(f"   Prompt preview: {prompt_preview}")
+                        
+                        # Add timeout to prevent hanging (30 seconds per chunk)
+                        import asyncio
+                        llm_response = await asyncio.wait_for(
+                            llm_service.analyze_text(llm_prompt),
+                            timeout=30.0
+                        )
+                        logger.info(f"   LLM Response received (type: {type(llm_response).__name__})")
+                        
+                        if isinstance(llm_response, dict):
+                            logger.debug(f"   Response keys: {list(llm_response.keys())}")
                             
-                            # Get allowed status if provided
-                            if "allowed" in llm_response:
-                                allowed_status = bool(llm_response.get("allowed", False))
-                                reason_text = llm_response.get("reason", f"Found semantically as: {semantic_match}")
-                                if ocrd_match and ocrd_match != "N/A":
-                                    reason_text += f" (matches OCRD: {ocrd_match})"
-                                logger.info(f"   🎯 Decision: {'ALLOWED' if allowed_status else 'PROHIBITED'}")
-                                logger.info(f"   💭 Reasoning: {reason_text}")
-                                break  # Found it, no need to check other chunks
-                            else:
-                                # Found but no allowed status - continue checking other chunks
-                                reason_text = f"Found semantically as: {semantic_match}"
-                                if ocrd_match and ocrd_match != "N/A":
-                                    reason_text += f" (matches OCRD: {ocrd_match})"
-                                reason_text += " (checking for permission status...)"
-                                logger.info(f"   ⏳ Found but permission status unclear, checking next chunk...")
-                        elif "found" in llm_response and llm_response.get("found") is False:
-                            # Not found in this chunk
-                            logger.debug(f"   ❌ Not found in chunk {chunk_idx + 1}, continuing...")
-                        # If "found": false, continue to next chunk
-                    else:
-                        # Try to extract JSON from response text
-                        response_text = json.dumps(llm_response) if not isinstance(llm_response, str) else llm_response
-                        json_start = response_text.find('{')
-                        json_end = response_text.rfind('}') + 1
-                        if json_start != -1 and json_end > json_start:
-                            try:
-                                json_str = response_text[json_start:json_end]
-                                parsed = json.loads(json_str)
-                                logger.debug(f"   🔧 Parsed JSON from response: {parsed}")
-                                if parsed.get("found") is True:
-                                    found_in_document = True
-                                    semantic_match = parsed.get("semantic_match", instrument_name)
-                                    ocrd_match = parsed.get("ocrd_match", "N/A")
-                                    logger.info(f"   ✅ FOUND (parsed)!")
-                                    logger.info(f"      📝 Semantic match: '{semantic_match}'")
+                            if "error" in llm_response:
+                                logger.warning(f"   LLM error in chunk {chunk_idx + 1}: {llm_response.get('error')}")
+                                continue
+                            elif llm_response.get("found") is True:
+                                found_in_document = True
+                                semantic_match = llm_response.get("semantic_match", instrument_name)
+                                ocrd_match = llm_response.get("ocrd_match", "N/A")
+                                if "allowed" in llm_response:
+                                    allowed_status = bool(llm_response.get("allowed", False))
+                                    reason_text = llm_response.get("reason", f"Found semantically as: {semantic_match}")
                                     if ocrd_match and ocrd_match != "N/A":
-                                        logger.info(f"      🏷️ OCRD ID match: '{ocrd_match}'")
-                                    if "allowed" in parsed:
-                                        allowed_status = bool(parsed.get("allowed", False))
-                                        reason_text = parsed.get("reason", f"Found semantically as: {semantic_match}")
-                                        if ocrd_match and ocrd_match != "N/A":
-                                            reason_text += f" (matches OCRD: {ocrd_match})"
-                                        logger.info(f"   🎯 Decision: {'ALLOWED' if allowed_status else 'PROHIBITED'}")
-                                        logger.info(f"   💭 Reasoning: {reason_text}")
-                                        break
-                                    else:
-                                        reason_text = f"Found semantically as: {semantic_match}"
-                                        if ocrd_match and ocrd_match != "N/A":
-                                            reason_text += f" (matches OCRD: {ocrd_match})"
-                                        reason_text += " (checking for permission status...)"
-                                        logger.info(f"   ⏳ Found but permission status unclear, checking next chunk...")
+                                        reason_text += f" (OCRD: {ocrd_match})"
+                                    break
                                 else:
-                                    logger.debug(f"   ❌ Not found in chunk {chunk_idx + 1} (parsed), continuing...")
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"   ⚠️ Failed to parse JSON from response: {e}")
-                                logger.debug(f"   📄 Raw response text: {response_text[:500]}")
-                                pass  # Continue to next chunk
+                                    reason_text = llm_response.get("reason", f"Found semantically as: {semantic_match}; evidence inconclusive")
+                            else:
+                                logger.debug(f"   Not found in chunk {chunk_idx + 1}, continuing...")
+                        else:
+                            response_text = json.dumps(llm_response) if not isinstance(llm_response, str) else llm_response
+                            json_start = response_text.find('{')
+                            json_end = response_text.rfind('}') + 1
+                            if json_start != -1 and json_end > json_start:
+                                try:
+                                    parsed = json.loads(response_text[json_start:json_end])
+                                    if parsed.get("found") is True:
+                                        found_in_document = True
+                                        semantic_match = parsed.get("semantic_match", instrument_name)
+                                        ocrd_match = parsed.get("ocrd_match", "N/A")
+                                        if "allowed" in parsed:
+                                            allowed_status = bool(parsed.get("allowed", False))
+                                            reason_text = parsed.get("reason", f"Found semantically as: {semantic_match}")
+                                            if ocrd_match and ocrd_match != "N/A":
+                                                reason_text += f" (OCRD: {ocrd_match})"
+                                            break
+                                        else:
+                                            reason_text = parsed.get("reason", f"Found semantically as: {semantic_match}; evidence inconclusive")
+                                except Exception as e:
+                                    logger.warning(f"   Failed to parse JSON from response: {e}")
+                                    pass
+                    except asyncio.TimeoutError:
+                        logger.warning(f"   LLM call timed out for chunk {chunk_idx + 1} - skipping")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"   Error in LLM call for chunk {chunk_idx + 1}: {e}")
+                        continue
                 
-                # After checking all chunks, update entry
                 if found_in_document:
                     matches_found += 1
-                    logger.info(f"   ✅ FINAL RESULT for '{instrument_name}': FOUND in document")
                     if allowed_status is not None:
                         entry['allowed'] = allowed_status
                         entry['reason'] = f"LLM semantic match: {reason_text}"
-                        
                         if allowed_status:
                             allowed_found += 1
-                            logger.info(f"   ✅ '{instrument_name}' = ALLOWED ✓ (matched as: {semantic_match})")
+                            logger.info(f"   ✅ '{instrument_name}' = ALLOWED ✓")
                         else:
                             prohibited_found += 1
-                            logger.info(f"   ❌ '{instrument_name}' = PROHIBITED ✗ (matched as: {semantic_match})")
+                            logger.info(f"   ❌ '{instrument_name}' = PROHIBITED ✗")
                     else:
-                        # Found but couldn't determine allowed status
                         entry['allowed'] = None
                         entry['reason'] = f"Found semantically but permission status unclear: {reason_text}"
                         logger.warning(f"   ⚠️ '{instrument_name}': Found but permission status unclear")
                 else:
-                    # Not found in any chunk
                     entry['allowed'] = None
                     entry['reason'] = "Not found in document (semantic search)"
                     logger.info(f"   ❌ '{instrument_name}': NOT FOUND in document after semantic search")
@@ -833,16 +885,9 @@ If the term or OCRD ID is NOT found in this chunk, set "found": false."""
     
     def search_document_for_all_entries(self, document_text: str) -> Dict:
         """
-        Search document text for ALL Excel entries and mark them as allowed/permitted.
-        This searches the document directly for each instrument name and checks context.
-        
-        Args:
-            document_text: Full text of the document to search
-            
-        Returns:
-            Dictionary with statistics about matches found
+        Deterministic scan: sentence-level evidence, no parent promotion without ALL/ANY.
         """
-        document_lower = document_text.lower()
+        document_lower = (document_text or "").lower()
         matches_found = 0
         allowed_found = 0
         
@@ -853,14 +898,11 @@ If the term or OCRD ID is NOT found in this chunk, set "found": false."""
             if not instrument_name or instrument_name == 'nan':
                 continue
             
-            # Search for instrument name in document (case-insensitive)
             instrument_lower = instrument_name.lower()
             instrument_words = set(re.findall(r'\w+', instrument_lower))
-            
-            # Find all positions where instrument name appears (exact or word-based)
             found_positions = []
             
-            # First try exact match
+            # exact
             start_pos = 0
             while True:
                 pos = document_lower.find(instrument_lower, start_pos)
@@ -869,106 +911,79 @@ If the term or OCRD ID is NOT found in this chunk, set "found": false."""
                 found_positions.append(pos)
                 start_pos = pos + 1
             
-            # If no exact match, try word-based matching
+            # word-based
             if not found_positions and instrument_words:
-                # Find positions where key words appear close together
                 for word in instrument_words:
-                    if len(word) >= 4:  # Only search for significant words (4+ chars)
-                        word_positions = []
+                    if len(word) >= 4:
                         start = 0
                         while True:
                             pos = document_lower.find(word, start)
                             if pos == -1:
                                 break
-                            word_positions.append(pos)
-                            start = pos + 1
-                        
-                        # If we found this word, check if other words are nearby (within 50 chars)
-                        for wp in word_positions:
-                            # Check if other instrument words appear nearby
-                            nearby_words = 0
-                            for other_word in instrument_words:
-                                if other_word != word and len(other_word) >= 4:
-                                    # Check if other word appears within 50 chars
-                                    check_start = max(0, wp - 50)
-                                    check_end = min(len(document_lower), wp + len(word) + 50)
-                                    if other_word in document_lower[check_start:check_end]:
-                                        nearby_words += 1
-                            
-                            # If at least one other word is nearby, consider it a match
-                            if nearby_words > 0 or len(instrument_words) == 1:
-                                found_positions.append(wp)
+                            # quick vicinity check for another word
+                            check_start = max(0, pos - 50)
+                            check_end = min(len(document_lower), pos + len(word) + 50)
+                            nearby_ok = any(
+                                (other != word and len(other) >= 4 and other in document_lower[check_start:check_end])
+                                for other in instrument_words
+                            )
+                            if nearby_ok or len(instrument_words) == 1:
+                                found_positions.append(pos)
                                 break
-                        
+                            start = pos + 1
                         if found_positions:
                             logger.debug(f"Found '{instrument_name}' via word-based matching (word: '{word}')")
                             break
             
             if found_positions:
                 matches_found += 1
-                
-                # Find all occurrences and check context for "allowed/permitted"
-                found_allowed = False
-                found_prohibited = False
+                found_label = None  # "Allowed" | "Prohibited" | "Conditional" | None
                 evidence_text = ""
                 
-                # Check context for each found position
                 for pos in found_positions:
-                    
-                    # Extract context around the match (200 chars before and after)
-                    # Use instrument_lower length for exact matches, or estimate for word matches
-                    match_length = len(instrument_lower) if pos != -1 else 20
-                    context_start = max(0, pos - 200)
-                    context_end = min(len(document_lower), pos + match_length + 200)
-                    context = document_lower[context_start:context_end]
-                    
-                    # Check for allowed/permitted keywords in context
-                    allowed_keywords = ['allowed', 'permitted', 'authorized', 'approved', 'may invest', 'can invest']
-                    prohibited_keywords = ['prohibited', 'forbidden', 'not allowed', 'restricted', 'excluded', 'may not invest', 'cannot invest']
-                    
-                    # Check if any allowed keyword appears before prohibited keywords
-                    allowed_positions = [context.find(kw) for kw in allowed_keywords if context.find(kw) != -1]
-                    prohibited_positions = [context.find(kw) for kw in prohibited_keywords if context.find(kw) != -1]
-                    
-                    # If allowed keywords found and no prohibited keywords, or allowed is closer
-                    if allowed_positions:
-                        if not prohibited_positions or min(allowed_positions) < min(prohibited_positions):
-                            found_allowed = True
-                            # Extract the sentence or phrase containing the match
-                            sentence_start = max(0, context.find('.', max(0, pos - context_start - 100)))
-                            sentence_end = context.find('.', pos - context_start + len(instrument_lower) + 100)
-                            if sentence_end == -1:
-                                sentence_end = len(context)
-                            evidence_text = context[sentence_start:sentence_end].strip()
+                    ctx = _sentence_window(document_lower, pos, span=260)
+                    term_present = instrument_lower in ctx
+                    has_neg = bool(PROHIBIT_MARKERS.search(ctx))
+                    has_allow = bool(ALLOW_MARKERS.search(ctx))
+                    has_cond = bool(CONDITIONAL_MARKERS.search(ctx))
+                    if _is_generic_parent(instrument_name):
+                        has_all_quant = bool(ALL_QUANTIFIERS.search(ctx))
+                    else:
+                        has_all_quant = True
+
+                    if term_present:
+                        if has_neg:
+                            found_label = "Prohibited"
+                            evidence_text = ctx.strip()
                             break
-                    
-                    # If prohibited keywords found
-                    if prohibited_positions:
-                        found_prohibited = True
-                        sentence_start = max(0, context.find('.', max(0, pos - context_start - 100)))
-                        sentence_end = context.find('.', pos - context_start + len(instrument_lower) + 100)
-                        if sentence_end == -1:
-                            sentence_end = len(context)
-                        evidence_text = context[sentence_start:sentence_end].strip()
-                        break  # Found prohibited, no need to check more positions
+                        if has_allow and has_all_quant:
+                            found_label = "Conditional" if has_cond else "Allowed"
+                            evidence_text = ctx.strip()
+                        elif has_allow and not has_all_quant and _is_generic_parent(instrument_name):
+                            # don't promote generic parent without quantifier
+                            pass
+                        elif has_cond and has_all_quant:
+                            found_label = found_label or "Conditional"
+                            evidence_text = evidence_text or ctx.strip()
                 
-                # Mark entry based on what was found
-                if found_allowed:
+                if found_label == "Allowed":
                     entry['allowed'] = True
-                    entry['reason'] = f"Found in document with 'allowed/permitted' context: {evidence_text[:200]}"
+                    entry['reason'] = f"Evidence: {evidence_text[:300]}"
                     allowed_found += 1
                     logger.debug(f"✅ Found '{instrument_name}' as ALLOWED in document")
-                elif found_prohibited:
+                elif found_label == "Prohibited":
                     entry['allowed'] = False
-                    entry['reason'] = f"Found in document with 'prohibited/restricted' context: {evidence_text[:200]}"
+                    entry['reason'] = f"Evidence: {evidence_text[:300]}"
                     logger.debug(f"❌ Found '{instrument_name}' as PROHIBITED in document")
+                elif found_label == "Conditional":
+                    entry['allowed'] = None
+                    entry['reason'] = f"Conditional/limited: {evidence_text[:300]}"
+                    logger.debug(f"⚠️ '{instrument_name}' conditional")
                 else:
-                    # Found in document but unclear context - mark as found but uncertain
-                    entry['allowed'] = None  # Keep as None to indicate found but uncertain
-                    entry['reason'] = f"Found in document but context unclear: {evidence_text[:200] if evidence_text else 'No clear permission/restriction found'}"
-                    logger.debug(f"⚠️ Found '{instrument_name}' in document but context unclear")
+                    entry['allowed'] = None
+                    entry['reason'] = "Found, but no explicit allow/prohibit sentence in context"
+                    logger.debug(f"⚠️ '{instrument_name}' found but inconclusive")
             else:
-                # Not found in document - leave as None (will show as empty in Excel)
                 entry['allowed'] = None
                 entry['reason'] = "Not found in document"
         
@@ -995,4 +1010,3 @@ If the term or OCRD ID is NOT found in this chunk, set "found": false."""
             'unset': unset,
             'coverage': (allowed + not_allowed) / total * 100 if total > 0 else 0
         }
-

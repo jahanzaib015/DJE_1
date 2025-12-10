@@ -60,6 +60,18 @@ try:
 except ImportError:
     CAMELOT_AVAILABLE = False
 
+try:
+    from pdf2image import convert_from_path
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+
+try:
+    from pypdf import PdfReader
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
+
 class FileHandler:
     """Handle file operations for the OCRD extractor"""
     
@@ -69,6 +81,7 @@ class FileHandler:
     def __init__(self):
         self.upload_dir = "uploads"
         self.export_dir = "exports"
+        self.markdown_dir = "markdown"
         self.trace_handler = TraceHandler()
         self._ensure_directories()
     
@@ -76,6 +89,72 @@ class FileHandler:
         """Ensure required directories exist"""
         os.makedirs(self.upload_dir, exist_ok=True)
         os.makedirs(self.export_dir, exist_ok=True)
+        os.makedirs(self.markdown_dir, exist_ok=True)
+    
+    def is_image_only_pdf(self, file_path: str) -> bool:
+        """
+        Detect if PDF is image-only (scanned) by checking if extractable text is minimal.
+        
+        This method is conservative - it only flags as image-only if:
+        - Total text is very low (< 100 chars per page on average)
+        - AND at least 3 pages have been checked
+        - OR total text is extremely low (< 200 chars total)
+        
+        Args:
+            file_path: Path to PDF file
+            
+        Returns:
+            True if PDF appears to be image-only (scanned), False otherwise
+        """
+        try:
+            if not PYPDF_AVAILABLE:
+                # Fallback: try PyPDF2
+                with open(file_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    total_pages = len(pdf_reader.pages)
+                    # Check first few pages and last page to get a better sample
+                    pages_to_check = min(5, total_pages)
+                    text_parts = []
+                    for i in range(pages_to_check):
+                        text_parts.append(pdf_reader.pages[i].extract_text() or "")
+                    # Also check last page if we have more than 5 pages
+                    if total_pages > 5:
+                        text_parts.append(pdf_reader.pages[-1].extract_text() or "")
+                    text = "".join(text_parts)
+            else:
+                reader = PdfReader(file_path)
+                total_pages = len(reader.pages)
+                # Check first few pages and last page to get a better sample
+                pages_to_check = min(5, total_pages)
+                text_parts = []
+                for i in range(pages_to_check):
+                    text_parts.append(reader.pages[i].extract_text() or "")
+                # Also check last page if we have more than 5 pages
+                if total_pages > 5:
+                    text_parts.append(reader.pages[-1].extract_text() or "")
+                text = "".join(text_parts)
+            
+            text_length = len(text.strip())
+            
+            # Very conservative detection:
+            # - If total text is extremely low (< 200 chars), likely image-only
+            # - OR if we checked multiple pages and average is very low (< 100 chars per page)
+            if text_length < 200:
+                return True
+            
+            # If we checked multiple pages, check average
+            pages_checked = min(5, total_pages) + (1 if total_pages > 5 else 0)
+            if pages_checked >= 3:
+                avg_chars_per_page = text_length / pages_checked
+                if avg_chars_per_page < 100:
+                    return True
+            
+            # Default: assume it's a text PDF
+            return False
+        except Exception as e:
+            logger.warning(f"Error checking if PDF is image-only: {e}")
+            # If we can't check, assume it's not image-only and let normal pipeline handle it
+            return False
     
     async def save_uploaded_file(self, file) -> str:
         """Save uploaded file and return file path"""
@@ -90,17 +169,28 @@ class FileHandler:
         
         return file_path
     
-    async def extract_pdf_text(self, file_path: str) -> str:
-        """Extract text from PDF file"""
+    async def extract_pdf_text(self, file_path: str, max_pages: Optional[int] = None) -> str:
+        """Extract text from PDF file - extracts ALL pages"""
         try:
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
+                total_pages = len(pdf_reader.pages)
+                
+                logger.info(f"Extracting text from all {total_pages} pages...")
                 text = ""
                 
-                for page_num in range(len(pdf_reader.pages)):
+                # Extract all pages, but process in batches to avoid memory issues
+                for page_num in range(total_pages):
                     page = pdf_reader.pages[page_num]
-                    text += page.extract_text() + "\n"
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+                    
+                    # Log progress for large documents
+                    if (page_num + 1) % 25 == 0:
+                        logger.info(f"Extracted {page_num + 1}/{total_pages} pages ({len(text)} chars so far)")
                 
+                logger.info(f"Extraction complete: {total_pages} pages, {len(text)} characters")
                 return text.strip()
         except Exception as e:
             raise Exception(f"Failed to extract text from PDF: {str(e)}")
@@ -119,18 +209,56 @@ class FileHandler:
                 "total_pages": 0,
                 "char_count": 0,
                 "tables_found": 0,
-                "ocr_used": False
+                "ocr_used": False,
+                "is_image_only": False
             }
             
-            # Extract text using robust fallback chain
+            # Always try text extraction first using robust fallback chain
+            # This ensures normal text PDFs work correctly
+            logger.info(f"📄 Attempting text extraction for: {file_path}")
             page_texts, extraction_methods = await self._extract_text_robust(file_path, trace_dir)
+            
+            # Validate extraction
+            total_chars = sum(len(t) for t in page_texts)
+            if total_chars == 0:
+                logger.error(f"⚠️ CRITICAL: Text extraction returned 0 characters! File: {file_path}")
+                logger.error(f"⚠️ Extraction methods tried: {extraction_methods}")
+                # Try OCR as last resort if not already tried
+                if not any(method.get("method") == "ocr" for method in extraction_methods):
+                    logger.warning("⚠️ Attempting OCR as last resort...")
+                    try:
+                        ocr_texts = await self._extract_with_ocr(file_path, trace_dir)
+                        if ocr_texts and sum(len(t) for t in ocr_texts) > 0:
+                            page_texts = ocr_texts
+                            extraction_methods.append({"method": "ocr", "char_count": sum(len(t) for t in ocr_texts), "success": True})
+                            total_chars = sum(len(t) for t in page_texts)
+                            logger.info(f"✅ OCR succeeded! Extracted {total_chars} characters")
+                    except Exception as ocr_error:
+                        logger.error(f"❌ OCR also failed: {ocr_error}")
+                        extraction_methods.append({"method": "ocr", "error": str(ocr_error), "success": False})
+            
+            # Determine if PDF is truly image-only based on extraction results
+            # Only mark as image-only if we got very little text after trying all methods
+            # This is more reliable than pre-checking
+            is_image_only = False
+            if total_chars == 0:
+                # No text extracted at all - likely image-only
+                is_image_only = True
+                logger.warning(f"📸 No text extracted - PDF appears to be image-only (scanned). Will need vision pipeline.")
+            elif total_chars < 500 and len(page_texts) > 0:
+                # Very little text relative to number of pages - likely image-only
+                avg_chars_per_page = total_chars / len(page_texts)
+                if avg_chars_per_page < 100:
+                    is_image_only = True
+                    logger.warning(f"📸 Very little text extracted ({total_chars} chars, {avg_chars_per_page:.1f} chars/page) - PDF appears to be image-only (scanned). Will need vision pipeline.")
             
             # Update metadata
             meta.update({
                 "extraction_methods": extraction_methods,
                 "total_pages": len(page_texts),
-                "char_count": sum(len(t) for t in page_texts),
-                "ocr_used": any(method.get("method") == "ocr" for method in extraction_methods)
+                "char_count": total_chars,
+                "ocr_used": any(method.get("method") == "ocr" for method in extraction_methods),
+                "is_image_only": is_image_only
             })
             
             # Save raw text for each page
@@ -142,15 +270,41 @@ class FileHandler:
             # Clean and normalize text
             clean_text = self._clean_text_robust(page_texts)
             
+            # Warn if clean text is empty or very short
+            if len(clean_text) == 0:
+                logger.error(f"⚠️ CRITICAL: Clean text is empty after processing! Raw text had {total_chars} characters.")
+                # If clean text is empty but we have pages, mark as image-only
+                if len(page_texts) > 0:
+                    is_image_only = True
+            elif len(clean_text) < 100:
+                logger.warning(f"⚠️ WARNING: Clean text is very short ({len(clean_text)} chars). PDF might be image-based or have extraction issues.")
+            
             # Save clean text
             await self.trace_handler.save_clean_text(trace_id, clean_text)
             
             # Extract tables if available
             tables = await self._extract_tables(file_path, trace_dir)
+            meta["tables_found"] = len(tables)
+            
+            # NEW: If tables/images are detected, prefer OCR-extracted text to preserve X/- marks
+            has_tables = len(tables) > 0
+            should_use_ocr = has_tables or is_image_only or len(clean_text) < 1000
+            
+            if should_use_ocr and not meta.get("ocr_used", False):
+                logger.info(f"📸 Tables/images detected or low text quality - attempting OCR extraction to preserve X/- marks...")
+                ocr_texts = await self._extract_with_ocr(file_path, trace_dir)
+                if ocr_texts and sum(len(t) for t in ocr_texts) > len(clean_text) * 0.5:  # OCR gives at least 50% more text
+                    ocr_clean_text = self._clean_text_robust(ocr_texts)
+                    logger.info(f"✅ OCR extraction successful: {len(ocr_clean_text)} chars (vs {len(clean_text)} from regular extraction)")
+                    clean_text = ocr_clean_text
+                    meta["ocr_used"] = True
+                    methods_used.append({"method": "ocr_preferred", "char_count": len(ocr_clean_text), "success": True, "reason": "tables/images detected"})
+                else:
+                    logger.info(f"⚠️ OCR extraction didn't improve text quality, using regular extraction")
+            
             if tables:
                 # Stitch tables back into text with clear markers
                 clean_text = self._stitch_tables_into_text(clean_text, tables)
-                meta["tables_found"] = len(tables)
                 # Save tables separately
                 await self.trace_handler.save_tables(trace_id, tables)
             
@@ -178,13 +332,14 @@ class FileHandler:
             # Save RAG indexing results
             await self.trace_handler.save_rag_index(trace_id, rag_results)
             
-            # Update final metadata
+            # Update final metadata with is_image_only status
             meta.update({
                 "clean_text_length": len(clean_text),
                 "chunks_count": len(chunks),
                 "extraction_time": time.time() - start_time,
                 "rag_indexed": rag_results.get("success", False),
-                "rag_chunks_indexed": rag_results.get("indexed", 0)
+                "rag_chunks_indexed": rag_results.get("indexed", 0),
+                "is_image_only": is_image_only
             })
             
             # Save metadata
@@ -200,7 +355,8 @@ class FileHandler:
                 "total_pages": len(page_texts),
                 "extraction_time": extraction_time,
                 "extraction_methods": extraction_methods,
-                "ocr_used": meta["ocr_used"]
+                "ocr_used": meta["ocr_used"],
+                "is_image_only": is_image_only
             }
                 
         except Exception as e:
@@ -247,39 +403,61 @@ class FileHandler:
             methods_used.append({"method": "pypdf2", "error": str(e), "success": False})
             raise Exception("All text extraction methods failed")
     
-    def _extract_with_pymupdf(self, file_path: str) -> tuple[List[str], int]:
-        """Extract text using PyMuPDF"""
+    def _extract_with_pymupdf(self, file_path: str, max_pages: Optional[int] = None) -> tuple[List[str], int]:
+        """Extract text using PyMuPDF - extracts ALL pages"""
         doc = fitz.open(file_path)
-        page_texts = []
+        total_pages = len(doc)
         
-        for page in doc:
+        logger.info(f"PyMuPDF: Extracting all {total_pages} pages...")
+        page_texts = []
+        total_chars = 0
+        
+        for page_num in range(total_pages):
+            page = doc[page_num]
             txt = page.get_text("text")
             page_texts.append(txt)
+            total_chars += len(txt)
+            
+            # Log progress for large documents
+            if (page_num + 1) % 25 == 0:
+                logger.info(f"PyMuPDF: Extracted {page_num + 1}/{total_pages} pages ({total_chars} chars so far)")
         
         doc.close()
-        char_count = sum(len(t) for t in page_texts)
-        return page_texts, char_count
+        logger.info(f"PyMuPDF extraction complete: {total_pages} pages, {total_chars} characters")
+        return page_texts, total_chars
     
-    def _extract_with_pdfminer(self, file_path: str) -> tuple[List[str], int]:
-        """Extract text using pdfminer"""
+    def _extract_with_pdfminer(self, file_path: str, max_pages: Optional[int] = None) -> tuple[List[str], int]:
+        """Extract text using pdfminer - extracts ALL pages"""
+        logger.info("pdfminer: Extracting all pages...")
         text = pdfminer_extract(file_path)
         # Split by pages (rough approximation)
         page_texts = text.split('\f')  # Form feed character
         char_count = len(text)
+        logger.info(f"pdfminer extraction complete: {len(page_texts)} pages, {char_count} characters")
         return page_texts, char_count
     
-    def _extract_with_pypdf2(self, file_path: str) -> tuple[List[str], int]:
-        """Extract text using PyPDF2 (fallback)"""
+    def _extract_with_pypdf2(self, file_path: str, max_pages: Optional[int] = None) -> tuple[List[str], int]:
+        """Extract text using PyPDF2 (fallback) - extracts ALL pages"""
         with open(file_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
-            page_texts = []
+            total_pages = len(pdf_reader.pages)
             
-            for page in pdf_reader.pages:
+            logger.info(f"PyPDF2: Extracting all {total_pages} pages...")
+            page_texts = []
+            total_chars = 0
+            
+            for page_num in range(total_pages):
+                page = pdf_reader.pages[page_num]
                 txt = page.extract_text()
                 page_texts.append(txt)
+                total_chars += len(txt)
+                
+                # Log progress for large documents
+                if (page_num + 1) % 25 == 0:
+                    logger.info(f"PyPDF2: Extracted {page_num + 1}/{total_pages} pages ({total_chars} chars so far)")
         
-        char_count = sum(len(t) for t in page_texts)
-        return page_texts, char_count
+        logger.info(f"PyPDF2 extraction complete: {total_pages} pages, {total_chars} characters")
+        return page_texts, total_chars
     
     async def _extract_with_ocr(self, file_path: str, trace_dir: Path) -> List[str]:
         """Extract text using OCR (Tesseract)"""
@@ -313,7 +491,7 @@ class FileHandler:
             return []
     
     def _clean_text_robust(self, page_texts: List[str]) -> str:
-        """Robust text cleaning that preserves meaning"""
+        """Robust text cleaning that preserves meaning and structure"""
         # Join all pages
         text = "\n".join(page_texts)
         
@@ -323,15 +501,24 @@ class FileHandler:
         # Normalize unicode (fi/ff ligatures, etc.)
         text = unicodedata.normalize("NFKC", text)
         
-        # Fix common OCR errors
-        text = re.sub(r"(\w)\s+(\w)", r"\1 \2", text)  # Fix word spacing
-        text = re.sub(r"(\w)([A-Z])", r"\1 \2", text)  # Fix missing spaces before capitals
+        # Fix common OCR errors (but preserve newlines)
+        # Fix word spacing within lines (not across newlines)
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Fix excessive spaces within the line
+            line = re.sub(r' +', ' ', line)
+            # Fix missing spaces before capitals within the line
+            line = re.sub(r"(\w)([A-Z])", r"\1 \2", line)
+            cleaned_lines.append(line)
+        text = '\n'.join(cleaned_lines)
         
-        # Collapse multiple blank lines
+        # Collapse multiple blank lines (but preserve single newlines)
         text = re.sub(r"\n{3,}", "\n\n", text)
         
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
+        # Remove excessive spaces within lines (but preserve newlines)
+        # This preserves line structure which is important for table detection
+        text = re.sub(r'[ \t]+', ' ', text)  # Collapse spaces/tabs but keep newlines
         
         # Remove page numbers and headers/footers (basic patterns)
         text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
@@ -815,6 +1002,308 @@ class FileHandler:
             
         except Exception as e:
             raise Exception(f"Failed to create Excel export: {str(e)}")
+    
+    def convert_text_to_markdown(self, text: str, filename: str = None) -> str:
+        """
+        Convert plain text to markdown format with improved structure preservation.
+        Preserves markdown table structure when detected.
+        
+        Args:
+            text: The plain text to convert
+            filename: Optional filename for the markdown file (without extension)
+            
+        Returns:
+            Markdown formatted string
+        """
+        if not text:
+            return ""
+        
+        # Create markdown content with proper formatting
+        markdown_content = f"# Document Content\n\n"
+        
+        # Split text into lines for better processing
+        lines = text.split('\n')
+        current_paragraph = []
+        in_table = False
+        in_marked_table = False  # Table with explicit markers (=== TABLE ===)
+        current_table = []
+        
+        for i, line in enumerate(lines):
+            line = line.rstrip()  # Remove trailing whitespace but preserve leading
+            original_line = line  # Keep original for table preservation
+            
+            # Check if this is a table marker (start or end)
+            is_table_marker = self._is_table_marker(line)
+            
+            # Check if this is a table line (markdown table syntax)
+            is_table_line = self._is_table_line(line)
+            
+            # If we hit a table marker, handle table block
+            if is_table_marker:
+                # Flush any pending paragraph first
+                if current_paragraph:
+                    paragraph_text = '\n'.join(current_paragraph).strip()
+                    if paragraph_text:
+                        if self._is_heading(paragraph_text):
+                            markdown_content += f"## {paragraph_text}\n\n"
+                        else:
+                            markdown_content += f"{paragraph_text}\n\n"
+                    current_paragraph = []
+                
+                # Start or end marked table block
+                if not in_marked_table:
+                    # Starting a marked table block
+                    in_marked_table = True
+                    in_table = True
+                    current_table = [original_line]
+                else:
+                    # Ending a marked table block
+                    current_table.append(original_line)
+                    # Preserve the entire table block as-is
+                    markdown_content += '\n'.join(current_table) + '\n\n'
+                    current_table = []
+                    in_table = False
+                    in_marked_table = False
+                continue
+            
+            # If we're inside a marked table block, preserve all lines as-is
+            if in_marked_table:
+                current_table.append(original_line)
+                continue
+            
+            # If this is a markdown table line (but not a marker), start table block
+            if is_table_line and not in_table:
+                # Flush any pending paragraph first
+                if current_paragraph:
+                    paragraph_text = '\n'.join(current_paragraph).strip()
+                    if paragraph_text:
+                        if self._is_heading(paragraph_text):
+                            markdown_content += f"## {paragraph_text}\n\n"
+                        else:
+                            markdown_content += f"{paragraph_text}\n\n"
+                    current_paragraph = []
+                
+                # Start table block (detected by pipe syntax)
+                in_table = True
+                current_table = [original_line]
+                continue
+            
+            # If we were in a pipe-detected table but hit a non-table line, end the table
+            # Allow one empty line within tables, but end on second empty line or non-table content
+            if in_table and not in_marked_table:
+                if not line:
+                    # Empty line - allow it if we have table content
+                    if current_table and len(current_table) > 0:
+                        # Check if last line was also empty (two empty lines = end table)
+                        if len(current_table) > 1 and not current_table[-1].strip():
+                            # Second empty line - end table
+                            if current_table:
+                                markdown_content += '\n'.join(current_table) + '\n\n'
+                                current_table = []
+                            in_table = False
+                            # Continue to process this empty line as paragraph break
+                        else:
+                            # First empty line - allow it in table
+                            current_table.append(original_line)
+                            continue
+                    else:
+                        # No table content yet - shouldn't happen, but end table
+                        in_table = False
+                elif not is_table_line:
+                    # Non-table, non-empty line - end the table first
+                    if current_table:
+                        markdown_content += '\n'.join(current_table) + '\n\n'
+                        current_table = []
+                    in_table = False
+                    # Fall through to process this line as regular content
+                else:
+                    # Still a table line - continue collecting
+                    current_table.append(original_line)
+                    continue
+            
+            # Empty line indicates paragraph break
+            if not line:
+                if current_paragraph:
+                    paragraph_text = '\n'.join(current_paragraph).strip()
+                    if paragraph_text:
+                        # Check if it looks like a heading
+                        if self._is_heading(paragraph_text):
+                            markdown_content += f"## {paragraph_text}\n\n"
+                        else:
+                            markdown_content += f"{paragraph_text}\n\n"
+                    current_paragraph = []
+                continue
+            
+            # Check if line itself looks like a heading
+            if self._is_heading(line) and not current_paragraph:
+                # Standalone heading
+                markdown_content += f"## {line}\n\n"
+            else:
+                current_paragraph.append(line)
+        
+        # Handle any remaining table
+        if in_table and current_table:
+            markdown_content += '\n'.join(current_table) + '\n\n'
+        
+        # Add any remaining paragraph
+        if current_paragraph:
+            paragraph_text = '\n'.join(current_paragraph).strip()
+            if paragraph_text:
+                if self._is_heading(paragraph_text):
+                    markdown_content += f"## {paragraph_text}\n\n"
+                else:
+                    markdown_content += f"{paragraph_text}\n\n"
+        
+        return markdown_content
+    
+    def _is_heading(self, text: str) -> bool:
+        """
+        Determine if text looks like a heading.
+        
+        Args:
+            text: Text to check
+            
+        Returns:
+            True if text appears to be a heading
+        """
+        if not text or len(text) > 200:
+            return False
+        
+        # Check for common heading patterns
+        # All caps (but not too long)
+        if text.isupper() and len(text) < 100:
+            return True
+        
+        # Ends with colon (common in structured documents)
+        if text.endswith(':'):
+            return True
+        
+        # Starts with number followed by period or parenthesis (numbered sections)
+        if re.match(r'^\d+[\.\)]\s+', text):
+            return True
+        
+        # Starts with letter followed by period (e.g., "A. Section")
+        if re.match(r'^[A-Z][\.\)]\s+', text):
+            return True
+        
+        # Common section headers in German documents
+        german_headers = [
+            'zulässige anlagen', 'unzulässige anlagen', 'anlagegrundsätze',
+            'investment policy', 'restrictions', 'permitted', 'prohibited'
+        ]
+        text_lower = text.lower()
+        if any(header in text_lower for header in german_headers):
+            return True
+        
+        return False
+    
+    def _is_table_line(self, line: str) -> bool:
+        """
+        Determine if a line is part of a markdown table.
+        
+        Args:
+            line: Line to check
+            
+        Returns:
+            True if line appears to be a markdown table row
+        """
+        if not line:
+            return False
+        
+        # Check for markdown table syntax: lines with pipe separators
+        # Must have at least 2 pipe characters (|) to be a table row
+        pipe_count = line.count('|')
+        if pipe_count >= 2:
+            return True
+        
+        # Check for table separator row (---|---|---)
+        if re.match(r'^[\s\-\|]+$', line.strip()) and '---' in line:
+            return True
+        
+        return False
+    
+    def _is_table_marker(self, line: str) -> bool:
+        """
+        Determine if a line is a table marker (start/end of table block).
+        
+        Args:
+            line: Line to check
+            
+        Returns:
+            True if line is a table marker
+        """
+        if not line:
+            return False
+        
+        line_upper = line.upper().strip()
+        
+        # Check for table markers like "=== TABLE X ===" or "[TABLE X]"
+        if re.match(r'^===?\s*(TABLE|END\s+TABLE)', line_upper):
+            return True
+        
+        if re.match(r'^\[(TABLE|END\s+TABLE)', line_upper):
+            return True
+        
+        return False
+    
+    async def save_text_as_markdown(self, text: str, job_id: str = None, filename: str = None) -> str:
+        """
+        Convert text to markdown and save it to the markdown directory.
+        
+        Args:
+            text: The plain text to convert and save
+            job_id: Optional job ID to include in filename
+            filename: Optional custom filename (without extension)
+            
+        Returns:
+            Path to the saved markdown file
+        """
+        try:
+            # Generate filename if not provided
+            if not filename:
+                if job_id:
+                    filename = f"document_{job_id}"
+                else:
+                    filename = f"document_{uuid4().hex[:8]}"
+            
+            # Ensure filename doesn't have extension
+            filename = filename.replace('.md', '').replace('.markdown', '')
+            
+            # Convert to markdown
+            markdown_content = self.convert_text_to_markdown(text, filename)
+            
+            # Create full path
+            markdown_path = os.path.join(self.markdown_dir, f"{filename}.md")
+            
+            # Save markdown file
+            async with aiofiles.open(markdown_path, 'w', encoding='utf-8') as f:
+                await f.write(markdown_content)
+            
+            logger.info(f"✅ Markdown file saved: {markdown_path} ({len(markdown_content)} chars)")
+            return markdown_path
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save markdown file: {e}", exc_info=True)
+            raise Exception(f"Failed to save markdown file: {str(e)}")
+    
+    async def read_markdown_file(self, markdown_path: str) -> str:
+        """
+        Read markdown file content.
+        
+        Args:
+            markdown_path: Path to the markdown file
+            
+        Returns:
+            Content of the markdown file as string
+        """
+        try:
+            async with aiofiles.open(markdown_path, 'r', encoding='utf-8') as f:
+                content = await f.read()
+            logger.info(f"✅ Markdown file read: {markdown_path} ({len(content)} chars)")
+            return content
+        except Exception as e:
+            logger.error(f"❌ Failed to read markdown file: {e}", exc_info=True)
+            raise Exception(f"Failed to read markdown file: {str(e)}")
     
     def cleanup_file(self, file_path: str):
         """Clean up temporary file"""

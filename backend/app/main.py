@@ -62,7 +62,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "input": error.get("input")
         })
     
-    logger.error(f"❌ Validation error on {request.url.path}: {error_details}")
+    logger.error(f"Validation error on {request.url.path}: {error_details}")
     
     # Try to log request body
     try:
@@ -100,92 +100,123 @@ classification_service = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on startup (non-blocking)"""
+    """Initialize services on startup (non-blocking with timeouts) - API available immediately"""
     global analysis_service, llm_service, catalog_service, classification_service
     
-    logger.info("🚀 Starting service initialization...")
+    logger.info("Starting service initialization in background...")
+    logger.info("API is available immediately - services will initialize asynchronously")
     
-    # Initialize AnalysisService with Excel mapping file
-    try:
-        # Try to load Investment_Mapping.xlsx from root directory
-        import os
-        excel_mapping_path = None
-        
-        # Calculate root directory (two levels up from backend/app/main.py)
-        # backend/app/main.py -> backend/app -> backend -> root
-        current_file = os.path.abspath(__file__)
-        backend_dir = os.path.dirname(os.path.dirname(current_file))  # backend/app -> backend
-        root_dir = os.path.dirname(backend_dir)  # backend -> root
-        investment_mapping_path = os.path.join(root_dir, "Investment_Mapping.xlsx")
-        
-        logger.info(f"🔍 Looking for Excel file:")
-        logger.info(f"   Current file: {current_file}")
-        logger.info(f"   Root directory: {root_dir}")
-        logger.info(f"   Expected path: {investment_mapping_path}")
-        logger.info(f"   File exists: {os.path.exists(investment_mapping_path)}")
-        
-        if os.path.exists(investment_mapping_path):
-            excel_mapping_path = investment_mapping_path
-            logger.info(f"✅ Found Investment_Mapping.xlsx at: {investment_mapping_path}")
-        else:
-            logger.warning(f"⚠️ Investment_Mapping.xlsx not found at: {investment_mapping_path}")
-            logger.info("   Trying alternative locations...")
-            
-            # Try current working directory
-            cwd_path = os.path.join(os.getcwd(), "Investment_Mapping.xlsx")
-            if os.path.exists(cwd_path):
-                excel_mapping_path = cwd_path
-                logger.info(f"✅ Found Investment_Mapping.xlsx in CWD: {cwd_path}")
+    # Start initialization in background task - don't block API startup
+    asyncio.create_task(initialize_services_background())
+    
+    logger.info("Startup event complete - API ready (services initializing in background)")
+
+async def initialize_services_background():
+    """Initialize services in background without blocking API startup"""
+    global analysis_service, llm_service, catalog_service, classification_service
+    
+    logger.info("Background: Initializing services...")
+    
+    # Helper function to run blocking operations with timeout
+    async def run_with_timeout(coro_or_func, timeout_seconds: float = 30.0, service_name: str = "Service"):
+        """Run a blocking operation in a thread with timeout"""
+        try:
+            if asyncio.iscoroutine(coro_or_func):
+                return await asyncio.wait_for(coro_or_func, timeout=timeout_seconds)
             else:
-                logger.warning(f"   Also not found in CWD: {cwd_path}")
-                logger.info("   Will use embedded mapping if available")
+                # Run blocking function in thread pool
+                return await asyncio.wait_for(
+                    asyncio.to_thread(coro_or_func),
+                    timeout=timeout_seconds
+                )
+        except asyncio.TimeoutError:
+            logger.error(f"{service_name} initialization timed out after {timeout_seconds}s")
+            return None
+        except Exception as e:
+            logger.error(f"{service_name} initialization failed: {e}")
+            return None
+    
+    # Initialize AnalysisService with Excel mapping file (with timeout)
+    # Use lazy loading - don't load Excel file at startup, load it when needed
+    try:
+        def init_analysis_service():
+            # Don't load Excel file at startup - it will be loaded lazily when needed
+            # This makes startup much faster
+            logger.info("Background: Initializing AnalysisService (Excel will load on first use)...")
+            service = AnalysisService(excel_mapping_path=None)  # Load Excel lazily
+            logger.info("Background: AnalysisService ready (Excel mapping will load on demand)")
+            return service
         
-        logger.info(f"📤 Passing Excel path to AnalysisService: {excel_mapping_path}")
-        analysis_service = AnalysisService(excel_mapping_path=excel_mapping_path)
-        
-        # Verify Excel mapping was loaded
-        if analysis_service.excel_mapping:
-            entry_count = len(analysis_service.excel_mapping.get_all_entries())
-            logger.info(f"✅ AnalysisService initialized successfully with {entry_count} Excel entries")
-        else:
-            logger.error("❌ AnalysisService initialized but Excel mapping is None!")
+        # Run with shorter timeout since we're not loading Excel
+        result = await run_with_timeout(init_analysis_service, timeout_seconds=5.0, service_name="AnalysisService")
+        analysis_service = result
         
     except Exception as e:
-        logger.error(f"❌ Failed to initialize AnalysisService: {e}", exc_info=True)
+        logger.error(f"Failed to initialize AnalysisService: {e}")
         analysis_service = None
     
-    # Initialize LLMService
+    # Initialize LLMService (fast, no timeout needed but wrap for safety)
     try:
-        llm_service = LLMService()
-        logger.info("✅ LLMService initialized successfully")
+        def init_llm_service():
+            return LLMService()
+        
+        result = await run_with_timeout(init_llm_service, timeout_seconds=10.0, service_name="LLMService")
+        llm_service = result
+        if llm_service:
+            logger.info("Background: LLMService ready")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize LLMService: {e}", exc_info=True)
+        logger.error(f"Failed to initialize LLMService: {e}")
         llm_service = None
     
-    # Initialize CatalogService
+    # Initialize CatalogService (with timeout)
     try:
-        catalog_service = CatalogService()
-        logger.info("✅ CatalogService initialized successfully")
+        def init_catalog_service():
+            return CatalogService()
+        
+        result = await run_with_timeout(init_catalog_service, timeout_seconds=15.0, service_name="CatalogService")
+        catalog_service = result
+        if catalog_service:
+            logger.info("Background: CatalogService ready")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize CatalogService: {e}", exc_info=True)
+        logger.error(f"Failed to initialize CatalogService: {e}")
         catalog_service = None
     
-    # Initialize ClassificationService
+    # Initialize ClassificationService (depends on CatalogService)
     try:
         if catalog_service:
-            classification_service = ClassificationService(catalog_service=catalog_service)
-            logger.info("✅ ClassificationService initialized successfully")
+            def init_classification_service():
+                return ClassificationService(catalog_service=catalog_service)
+            
+            result = await run_with_timeout(init_classification_service, timeout_seconds=10.0, service_name="ClassificationService")
+            classification_service = result
+            if classification_service:
+                logger.info("Background: ClassificationService ready")
         else:
-            logger.warning("⚠️ ClassificationService not initialized (CatalogService unavailable)")
+            logger.debug("ClassificationService skipped (CatalogService unavailable)")
             classification_service = None
     except Exception as e:
-        logger.error(f"❌ Failed to initialize ClassificationService: {e}", exc_info=True)
+        logger.error(f"Failed to initialize ClassificationService: {e}")
         classification_service = None
     
-    logger.info("✅ Startup complete")
+    logger.info("Background: All services initialized")
 
-file_handler = FileHandler()
-trace_handler = TraceHandler()
+# Lazy initialization - create handlers when first needed
+file_handler = None
+trace_handler = None
+
+def get_file_handler():
+    """Get file handler (lazy initialization)"""
+    global file_handler
+    if file_handler is None:
+        file_handler = FileHandler()
+    return file_handler
+
+def get_trace_handler():
+    """Get trace handler (lazy initialization)"""
+    global trace_handler
+    if trace_handler is None:
+        trace_handler = TraceHandler()
+    return trace_handler
 
 # In-memory job storage (in production, use Redis or database)
 jobs: Dict[str, JobStatus] = {}
@@ -202,11 +233,11 @@ def load_jobs():
                 jobs_data = json.load(f)
                 for job_id, job_data in jobs_data.items():
                     jobs[job_id] = JobStatus(**job_data)
-            logger.info(f"✅ Loaded {len(jobs)} jobs from persistence file")
+            logger.debug(f"Loaded {len(jobs)} jobs from persistence file")
         else:
-            logger.info("No existing jobs file found, starting fresh")
+            logger.debug("No existing jobs file found, starting fresh")
     except Exception as e:
-        logger.error(f"❌ Error loading jobs from persistence: {e}", exc_info=True)
+        logger.error(f"Error loading jobs from persistence: {e}")
 
 def save_jobs():
     """Save jobs to persistence file"""
@@ -214,12 +245,15 @@ def save_jobs():
         jobs_data = {job_id: job.dict() for job_id, job in jobs.items()}
         with open(JOBS_FILE, 'w') as f:
             json.dump(jobs_data, f, indent=2)
-        logger.debug(f"💾 Saved {len(jobs)} jobs to persistence file")
+        logger.debug(f"Saved {len(jobs)} jobs to persistence file")
     except Exception as e:
-        logger.error(f"❌ Error saving jobs to persistence: {e}", exc_info=True)
+        logger.error(f"Error saving jobs to persistence: {e}")
 
-# Load existing jobs on startup
-load_jobs()
+# Load existing jobs in background (don't block startup)
+@app.on_event("startup")
+async def load_jobs_background():
+    """Load jobs in background without blocking"""
+    await asyncio.to_thread(load_jobs)
 
 # Cleanup old jobs (older than 24 hours)
 def cleanup_old_jobs():
@@ -242,11 +276,11 @@ def cleanup_old_jobs():
     
     for job_id in jobs_to_remove:
         del jobs[job_id]
-        logger.info(f"🗑️ Removed old job: {job_id}")
+        logger.debug(f"Removed old job: {job_id}")
     
     if jobs_to_remove:
         save_jobs()
-        logger.info(f"✅ Cleaned up {len(jobs_to_remove)} old jobs")
+        logger.debug(f"Cleaned up {len(jobs_to_remove)} old jobs")
 
 # Cleanup old jobs on startup
 cleanup_old_jobs()
@@ -315,14 +349,14 @@ async def get_available_models():
     if llm_service is None:
         return {
             "ollama_models": [],
-            "openai_models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo"],
-            "default_model": "gpt-4o",
+            "openai_models": ["gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"],
+            "default_model": "gpt-5.1",
             "warning": "LLM service not initialized"
         }
     return {
         "ollama_models": llm_service.get_ollama_models() if llm_service else [],
-        "openai_models": ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo"],
-        "default_model": "gpt-4o"
+        "openai_models": llm_service.get_openai_models() if llm_service else ["gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"],
+        "default_model": "gpt-5.1"
     }
 
 @app.post("/api/upload")
@@ -334,7 +368,7 @@ async def upload_file(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Only PDF files are allowed")
         
         # Save file temporarily
-        file_path = await file_handler.save_uploaded_file(file)
+        file_path = await get_file_handler().save_uploaded_file(file)
         
         return {
             "message": "File uploaded successfully",
@@ -369,7 +403,7 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
         job_id = str(uuid.uuid4())
         
         # Generate trace ID if tracing is enabled
-        trace_id = trace_handler.generate_trace_id() if enable_tracing else None
+        trace_id = get_trace_handler().generate_trace_id() if enable_tracing else None
         
         # Initialize job status
         jobs[job_id] = JobStatus(
@@ -392,7 +426,7 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
         if trace_id:
             response["trace_id"] = trace_id
         
-        logger.info(f"✅ Analysis job {job_id} queued successfully")
+        logger.debug(f"Analysis job {job_id} queued")
         return response
         
     except Exception as e:
@@ -400,12 +434,40 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
 
 async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Run analysis in background with progress updates"""
+    # Maximum time for entire analysis (15 minutes)
+    MAX_ANALYSIS_TIME = 900.0
+    
     try:
-        logger.info(f"🚀 Starting analysis for job {job_id} | Method: {get_enum_value(request.analysis_method)} | Provider: {get_enum_value(request.llm_provider)} | Model: {request.model}")
+        # Wrap entire analysis in timeout to prevent hanging
+        await asyncio.wait_for(
+            _run_analysis_internal(job_id, request, trace_id),
+            timeout=MAX_ANALYSIS_TIME
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Analysis job {job_id} timed out after {MAX_ANALYSIS_TIME}s")
+        if job_id in jobs:
+            jobs[job_id].status = "failed"
+            jobs[job_id].progress = 0
+            jobs[job_id].error = f"Analysis timed out after {MAX_ANALYSIS_TIME} seconds. Document may be too large or API is slow."
+            save_jobs()
+            await manager.send_message(job_id, jobs[job_id].dict())
+    except Exception as e:
+        logger.error(f"Analysis job {job_id} failed: {e}")
+        if job_id in jobs:
+            jobs[job_id].status = "failed"
+            jobs[job_id].progress = 0
+            jobs[job_id].error = str(e)
+            save_jobs()
+            await manager.send_message(job_id, jobs[job_id].dict())
+
+async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id: str = None):
+    """Internal analysis function with progress updates"""
+    try:
+        logger.info(f"Starting analysis job {job_id} | Method: {get_enum_value(request.analysis_method)} | Provider: {get_enum_value(request.llm_provider)}")
         
         # Check if job still exists
         if job_id not in jobs:
-            logger.warning(f"⚠️ Job {job_id} not found in jobs dictionary")
+            logger.warning(f"Job {job_id} not found in jobs dictionary")
             return
             
         # Update status
@@ -418,7 +480,7 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         # Extract text with or without tracing
         if trace_id:
             # Create trace directory
-            await trace_handler.create_trace_directory(trace_id)
+            await get_trace_handler().create_trace_directory(trace_id)
             
             # Save metadata
             meta_data = {
@@ -435,39 +497,92 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
                 "start_time": time.time(),
                 "created_at": datetime.now().isoformat()
             }
-            await trace_handler.save_meta(trace_id, meta_data)
+            await get_trace_handler().save_meta(trace_id, meta_data)
             
             # Extract text with tracing
-            extraction_result = await file_handler.extract_pdf_text_with_tracing(request.file_path, trace_id)
+            extraction_result = await get_file_handler().extract_pdf_text_with_tracing(request.file_path, trace_id)
             text = extraction_result["clean_text"]
+            is_image_only = extraction_result.get("is_image_only", False)
             
             # Update metadata with extraction info
             meta_data.update({
                 "total_pages": extraction_result["total_pages"],
                 "extraction_time": extraction_result["extraction_time"],
                 "text_length": len(text),
-                "chunks_count": len(extraction_result["chunks"])
+                "chunks_count": len(extraction_result.get("chunks", [])),
+                "is_image_only": is_image_only
             })
-            await trace_handler.save_meta(trace_id, meta_data)
+            await get_trace_handler().save_meta(trace_id, meta_data)
             
         else:
             # Regular text extraction
-            text = await file_handler.extract_pdf_text(request.file_path)
+            text = await get_file_handler().extract_pdf_text(request.file_path)
+            # Check if image-only for non-traced extraction too
+            is_image_only = get_file_handler().is_image_only_pdf(request.file_path)
         
         jobs[job_id].progress = 30
-        jobs[job_id].message = "Text extracted, starting analysis"
+        if is_image_only:
+            jobs[job_id].message = "Image-only PDF detected, using vision analysis"
+        else:
+            jobs[job_id].message = "Text extracted, converting to markdown"
         save_jobs()  # Save progress update
         await manager.send_message(job_id, jobs[job_id].dict())
         
-        # Run analysis
-        result = await analysis_service.analyze_document(
-            text=text,
-            analysis_method=request.analysis_method,
-            llm_provider=request.llm_provider,
-            model=request.model,
-            fund_id=request.fund_id,
-            trace_id=trace_id
-        )
+        # Convert text to markdown and save it
+        markdown_path = None
+        markdown_text = None
+        if not is_image_only:
+            try:
+                # Generate filename from original PDF or job_id
+                original_filename = os.path.basename(request.file_path)
+                filename_base = os.path.splitext(original_filename)[0] if original_filename else f"document_{job_id}"
+                
+                # Save text as markdown
+                markdown_path = await get_file_handler().save_text_as_markdown(
+                    text=text,
+                    job_id=job_id,
+                    filename=filename_base
+                )
+                
+                # Read the markdown file
+                markdown_text = await get_file_handler().read_markdown_file(markdown_path)
+                
+                jobs[job_id].progress = 40
+                jobs[job_id].message = "Markdown file created, starting analysis"
+                save_jobs()
+                await manager.send_message(job_id, jobs[job_id].dict())
+                
+                logger.info(f"✅ Markdown conversion complete: {markdown_path}")
+            except Exception as e:
+                logger.error(f"❌ Markdown conversion failed: {e}", exc_info=True)
+                # Fallback to original text if markdown conversion fails
+                markdown_text = text
+                logger.warning("⚠️ Falling back to original text for analysis")
+        
+        # Run analysis - use vision pipeline for image-only PDFs
+        if is_image_only:
+            logger.info(f"📸 Using vision pipeline for image-only PDF: {request.file_path}")
+            result = await analysis_service.analyze_document_vision(
+                pdf_path=request.file_path,
+                analysis_method=request.analysis_method,
+                llm_provider=request.llm_provider,
+                model=request.model,
+                fund_id=request.fund_id,
+                trace_id=trace_id
+            )
+        else:
+            # Use markdown text if available, otherwise fallback to original text
+            text_for_analysis = markdown_text if markdown_text else text
+            logger.info(f"📄 Using {'markdown' if markdown_text else 'original text'} for analysis")
+            
+            result = await analysis_service.analyze_document(
+                text=text_for_analysis,
+                analysis_method=request.analysis_method,
+                llm_provider=request.llm_provider,
+                model=request.model,
+                fund_id=request.fund_id,
+                trace_id=trace_id
+            )
         
         jobs[job_id].progress = 90
         jobs[job_id].message = "Analysis complete, finalizing results"
@@ -483,20 +598,19 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
         allowed_count = result.get("allowed_instruments", 0)
         total_count = result.get("total_instruments", 0)
         notes_count = len(result.get("notes", []))
-        logger.info(f"✅ [JOB {job_id}] Analysis complete: {allowed_count}/{total_count} allowed instruments, {notes_count} notes")
+        logger.info(f"Analysis complete [{job_id}]: {allowed_count}/{total_count} allowed instruments, {notes_count} notes")
         if notes_count > 0:
             logger.debug(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
-        
-        save_jobs()  # Save completion
         
         # Add trace_id to result if available
         if trace_id:
             jobs[job_id].result["trace_id"] = trace_id
         
+        save_jobs()  # Save completion
         await manager.send_message(job_id, jobs[job_id].dict())
         
     except Exception as e:
-        logger.error(f"❌ Analysis failed for job {job_id}: {str(e)}", exc_info=True)
+        logger.error(f"Analysis failed for job {job_id}: {str(e)}")
         logger.error(f"Exception type: {type(e).__name__}")
         
         # Only update job status if job still exists
@@ -506,9 +620,9 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
             jobs[job_id].message = f"Analysis failed: {str(e)}"
             save_jobs()  # Save error status
             await manager.send_message(job_id, jobs[job_id].dict())
-            logger.info(f"💾 Updated job {job_id} status to failed")
+            logger.debug(f"Updated job {job_id} status to failed")
         else:
-            logger.warning(f"⚠️ Job {job_id} not found when trying to update error status")
+            logger.warning(f"Job {job_id} not found when trying to update error status")
 
 @app.get("/api/jobs")
 async def list_jobs():
@@ -557,7 +671,7 @@ async def export_excel(job_id: str):
     
     # If Excel mapping is available, export the full mapping table (137 entries)
     if analysis_service and analysis_service.excel_mapping and len(analysis_service.excel_mapping.get_all_entries()) > 0:
-        excel_path = os.path.join(file_handler.export_dir, f"full_mapping_results_{job_id}.xlsx")
+        excel_path = os.path.join(get_file_handler().export_dir, f"full_mapping_results_{job_id}.xlsx")
         analysis_service.excel_mapping.export_to_excel(excel_path)
         return FileResponse(
             path=excel_path,
@@ -566,7 +680,7 @@ async def export_excel(job_id: str):
         )
     else:
         # Fallback to OCRD export if mapping not available
-        excel_path = await file_handler.create_excel_export(job.result)
+        excel_path = await get_file_handler().create_excel_export(job.result)
         return FileResponse(
             path=excel_path,
             filename=f"ocrd_results_{job_id}.xlsx",
@@ -585,7 +699,7 @@ async def export_mapping_excel(job_id: str):
     
     # Check if Excel mapping path exists in result
     if analysis_service and analysis_service.excel_mapping:
-        excel_path = os.path.join(file_handler.export_dir, f"mapping_results_{job_id}.xlsx")
+        excel_path = os.path.join(get_file_handler().export_dir, f"mapping_results_{job_id}.xlsx")
         analysis_service.excel_mapping.export_to_excel(excel_path)
         return FileResponse(
             path=excel_path,
@@ -624,11 +738,11 @@ async def list_traces():
     """List all available traces"""
     try:
         # Debug: Check if traces directory exists
-        traces_dir = trace_handler.base_traces_dir
+        traces_dir = get_trace_handler().base_traces_dir
         if not os.path.exists(traces_dir):
             return {"traces": [], "count": 0, "debug": f"Traces directory does not exist: {traces_dir}"}
         
-        traces = trace_handler.list_traces()
+        traces = get_trace_handler().list_traces()
         return {"traces": traces, "count": len(traces), "debug": f"Traces directory: {traces_dir}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list traces: {str(e)}")
@@ -637,7 +751,7 @@ async def list_traces():
 async def get_trace(trace_id: str):
     """Get trace details"""
     try:
-        summary = trace_handler.get_trace_summary(trace_id)
+        summary = get_trace_handler().get_trace_summary(trace_id)
         if "error" in summary:
             raise HTTPException(status_code=404, detail=summary["error"])
         return summary
@@ -648,7 +762,7 @@ async def get_trace(trace_id: str):
 async def get_trace_file(trace_id: str, filename: str):
     """Get specific trace file content"""
     try:
-        trace_dir = trace_handler.get_trace_dir(trace_id)
+        trace_dir = get_trace_handler().get_trace_dir(trace_id)
         file_path = os.path.join(trace_dir, filename)
         
         if not os.path.exists(file_path):
@@ -682,7 +796,7 @@ async def get_trace_file(trace_id: str, filename: str):
 async def delete_trace(trace_id: str):
     """Delete a trace"""
     try:
-        trace_dir = trace_handler.get_trace_dir(trace_id)
+        trace_dir = get_trace_handler().get_trace_dir(trace_id)
         if not os.path.exists(trace_dir):
             raise HTTPException(status_code=404, detail="Trace not found")
         
@@ -697,7 +811,7 @@ async def delete_trace(trace_id: str):
 async def cleanup_traces(max_age_hours: int = 24):
     """Clean up old traces"""
     try:
-        trace_handler.cleanup_old_traces(max_age_hours)
+        get_trace_handler().cleanup_old_traces(max_age_hours)
         return {"message": f"Cleaned up traces older than {max_age_hours} hours"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup traces: {str(e)}")
@@ -706,8 +820,8 @@ async def cleanup_traces(max_age_hours: int = 24):
 async def create_test_trace():
     """Create a test trace for debugging"""
     try:
-        trace_id = trace_handler.generate_trace_id()
-        await trace_handler.create_trace_directory(trace_id)
+        trace_id = get_trace_handler().generate_trace_id()
+        await get_trace_handler().create_trace_directory(trace_id)
         
         # Create test metadata
         test_meta = {
@@ -716,7 +830,7 @@ async def create_test_trace():
             "created_at": datetime.now().isoformat(),
             "message": "This is a test trace"
         }
-        await trace_handler.save_meta(trace_id, test_meta)
+        await get_trace_handler().save_meta(trace_id, test_meta)
         
         return {"message": f"Test trace created: {trace_id}", "trace_id": trace_id}
     except Exception as e:
@@ -862,7 +976,7 @@ async def classify_document(request: ClassificationRequest):
         return result
         
     except Exception as e:
-        logger.error(f"❌ Classification failed: {e}", exc_info=True)
+        logger.error(f"Classification failed: {e}")
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
 
 
@@ -880,7 +994,7 @@ async def get_catalog(active_only: bool = True):
         return items
         
     except Exception as e:
-        logger.error(f"❌ Failed to get catalog: {e}", exc_info=True)
+        logger.error(f"Failed to get catalog: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get catalog: {str(e)}")
 
 
@@ -903,7 +1017,7 @@ async def get_offering(offering_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to get offering: {e}", exc_info=True)
+        logger.error(f"Failed to get offering: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get offering: {str(e)}")
 
 
@@ -937,7 +1051,7 @@ async def create_offering(offering: InvestmentOffering):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to create offering: {e}", exc_info=True)
+        logger.error(f"Failed to create offering: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create offering: {str(e)}")
 
 
@@ -974,7 +1088,7 @@ async def update_offering(offering_id: str, offering: InvestmentOffering):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to update offering: {e}", exc_info=True)
+        logger.error(f"Failed to update offering: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update offering: {str(e)}")
 
 
@@ -1004,7 +1118,7 @@ async def delete_offering(offering_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to delete offering: {e}", exc_info=True)
+        logger.error(f"Failed to delete offering: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete offering: {str(e)}")
 
 

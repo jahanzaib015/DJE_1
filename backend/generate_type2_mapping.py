@@ -75,3 +75,7 @@ for type2, ocrd_key in sorted(type2_to_ocrd.items()):
 
 print(f"\nTotal mappings: {len(type2_to_ocrd)}")
 
+
+
+
+

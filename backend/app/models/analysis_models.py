@@ -26,7 +26,7 @@ class AnalysisRequest(BaseModel):
     
     file_path: str = Field(..., description="Path to the PDF file to analyze")
     analysis_method: Optional[AnalysisMethod] = Field(
-        default=AnalysisMethod.LLM_WITH_FALLBACK,
+        default=AnalysisMethod.LLM,
         description="Analysis method to use"
     )
     llm_provider: Optional[LLMProvider] = Field(
@@ -34,8 +34,8 @@ class AnalysisRequest(BaseModel):
         description="LLM provider to use"
     )
     model: Optional[str] = Field(
-        default="gpt-4o",
-        description="Specific model to use (e.g., 'gpt-4o', 'gpt-4-turbo')"
+        default="gpt-5",
+        description="Specific model to use (e.g., 'gpt-5', 'gpt-4o', 'gpt-4o-mini')"
     )
     fund_id: Optional[str] = Field(
         default="5800",
@@ -58,16 +58,16 @@ class AnalysisRequest(BaseModel):
     def validate_analysis_method(cls, v) -> Optional[AnalysisMethod]:
         """Convert string to enum, allowing both string and enum values"""
         if v is None:
-            return AnalysisMethod.LLM_WITH_FALLBACK
+            return AnalysisMethod.LLM
         if isinstance(v, AnalysisMethod):
             return v
         if isinstance(v, str):
             try:
                 return AnalysisMethod(v.lower())
             except ValueError:
-                # Default to LLM_WITH_FALLBACK if invalid
-                return AnalysisMethod.LLM_WITH_FALLBACK
-        return AnalysisMethod.LLM_WITH_FALLBACK
+                # Default to LLM if invalid
+                return AnalysisMethod.LLM
+        return AnalysisMethod.LLM
     
     @field_validator('llm_provider', mode='before')
     @classmethod
@@ -89,8 +89,9 @@ class AnalysisRequest(BaseModel):
     @classmethod
     def validate_model(cls, v: str) -> str:
         if not v or not str(v).strip():
-            return "gpt-4o"  # Default model
-        valid_models = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini", "gpt-3.5-turbo", "o1", "o1-mini", "gpt-4"]
+            return "gpt-5"  # Default model
+        # Supported models: gpt-5, gpt-4o, gpt-4o-mini, o1, o1-mini
+        # Note: Deprecated models (gpt-4, gpt-4-turbo, gpt-3.5-turbo) removed
         v_str = str(v).strip()
         # Allow any model (for future models), just normalize
         return v_str

@@ -70,7 +70,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             else:
                 log_data["body_preview"] = str(request_body)[:500]
         
-        logger.info(f"📥 INCOMING REQUEST [{request_id}] {method} {path}")
+        # Only log requests at debug level to reduce console spam
+        # These messages won't show in console (console handler is set to WARNING)
+        logger.debug(f"INCOMING REQUEST [{request_id}] {method} {path}")
         logger.debug(f"Request details: {json.dumps(log_data, indent=2, default=str)}")
         
         # Process request
@@ -84,16 +86,19 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             status_code = response.status_code
             log_level = logging.INFO if status_code < 400 else logging.ERROR
             
-            # Log response summary
-            logger.log(
-                log_level,
-                f"📤 OUTGOING RESPONSE [{request_id}] {method} {path} | "
-                f"Status: {status_code} | Duration: {duration:.3f}s"
-            )
-            
-            # Log error details if status code indicates error
+            # Log response summary (only errors to console, all to file)
             if status_code >= 400:
-                logger.error(f"❌ Error response [{request_id}]: Status {status_code} for {method} {path}")
+                logger.error(
+                    f"OUTGOING RESPONSE [{request_id}] {method} {path} | "
+                    f"Status: {status_code} | Duration: {duration:.3f}s"
+                )
+                logger.error(f"Error response [{request_id}]: Status {status_code} for {method} {path}")
+            else:
+                # Only log to file, not console
+                logger.debug(
+                    f"OUTGOING RESPONSE [{request_id}] {method} {path} | "
+                    f"Status: {status_code} | Duration: {duration:.3f}s"
+                )
             
             # Add custom headers
             response.headers["X-Request-ID"] = request_id
@@ -104,7 +109,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             duration = time.time() - start_time
             logger.error(
-                f"❌ REQUEST FAILED [{request_id}] {method} {path} | "
+                f"REQUEST FAILED [{request_id}] {method} {path} | "
                 f"Error: {str(e)} | Duration: {duration:.3f}s",
                 exc_info=True
             )
