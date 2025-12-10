@@ -23,18 +23,33 @@ services:
     env: python
     plan: free
     buildCommand: |
-      apt-get update && apt-get install -y tesseract-ocr poppler-utils build-essential
-      pip install --upgrade pip
+      pip install --upgrade pip setuptools wheel
       cd backend
-      pip install -r requirements.txt || pip install --only-binary=:all: -r requirements.txt
+      pip install -r requirements.txt
       mkdir -p /tmp/chroma
     startCommand: |
-      cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: PORT
         value: 8000
+      - key: HOST
+        value: 0.0.0.0
+      - key: DEBUG
+        value: "False"
+      - key: MAX_FILE_SIZE
+        value: 50MB
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: EXPORT_DIR
+        value: exports
+      - key: DEFAULT_LLM_PROVIDER
+        value: openai
+      - key: DEFAULT_MODEL
+        value: gpt-4o
+      - key: DEFAULT_ANALYSIS_METHOD
+        value: llm
       - key: OPENAI_API_KEY
-        fromService: ocrd-extractor-python-backend
+        sync: false
         type: secret
