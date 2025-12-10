@@ -9,13 +9,14 @@ export interface JobStatus {
 
 export interface AnalysisResult {
   sections: Record<string, Record<string, {
-    allowed: boolean;
+    allowed: boolean | null; // null = manual approval required
+    confidence?: number | null; // 0.0-1.0 confidence score for the match
     note: string;
     evidence: {
       text: string;
       page?: number;
     };
-  }>>;
+  }>>; // All sections are flat (future, option, warrant are top-level, no parent "derivatives" category)
   total_instruments: number;
   allowed_instruments: number;
   evidence_coverage: number;
@@ -37,4 +38,15 @@ export interface AnalysisRequest {
   llm_provider: string;
   model: string;
   fund_id: string;
+}
+
+// Type for instrument data structure
+export interface InstrumentData {
+  allowed: boolean | null;
+  confidence?: number | null;
+  note: string;
+  evidence: {
+    text: string;
+    page?: number;
+  };
 }

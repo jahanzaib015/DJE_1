@@ -19,9 +19,9 @@ function App() {
   const [showTraceViewer, setShowTraceViewer] = useState(false);
   const [currentTraceId, setCurrentTraceId] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsType>({
-    analysisMethod: 'llm_with_fallback',
+    analysisMethod: 'llm',
     llmProvider: 'openai',
-    model: 'gpt-4o-mini',
+    model: 'gpt-5.1',
     fundId: '5800'
   });
 

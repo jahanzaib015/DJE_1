@@ -16,13 +16,13 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onSettingsChange }
     const fetchModels = async () => {
       try {
         const models = await AnalysisService.getAvailableModels();
-        // ✅ updated: include new OpenAI models, fallback to gpt-4o-mini
+        // ✅ updated: include new OpenAI models, fallback to current models only
         setAvailableModels(
-          models.openai_models || ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']
+          models.openai_models || ['gpt-5.1', 'gpt-5', 'gpt-4o', 'gpt-4o-mini']
         );
       } catch (error) {
         logger.error('Failed to fetch models', { error });
-        setAvailableModels(['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo']);
+        setAvailableModels(['gpt-5.1', 'gpt-5', 'gpt-4o', 'gpt-4o-mini']);
       }
     };
 

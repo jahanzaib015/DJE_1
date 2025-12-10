@@ -13,11 +13,11 @@ PORT = int(os.getenv("PORT", "8000"))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 # File Upload Configuration
-MAX_FILE_SIZE = os.getenv("MAX_FILE_SIZE", "50MB")
+MAX_FILE_SIZE = os.getenv("MAX_FILE_SIZE", "200MB")  # Increased for large files
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 EXPORT_DIR = os.getenv("EXPORT_DIR", "exports")
 
 # LLM Configuration
 DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "openai")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-5")
 DEFAULT_ANALYSIS_METHOD = os.getenv("DEFAULT_ANALYSIS_METHOD", "llm_with_fallback")
