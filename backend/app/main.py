@@ -31,6 +31,11 @@ logger = setup_logger(__name__)
 
 print("[boot] app.main imported", flush=True)
 
+# Ensure PORT is available for Render
+import os
+PORT = os.getenv("PORT", "8000")
+print(f"[boot] PORT environment variable: {PORT}", flush=True)
+
 # --- Lazy imports for heavy modules (prevents Render port-scan timeout) ---
 def _import_services():
     from .services.analysis_service import AnalysisService
@@ -115,13 +120,18 @@ async def startup_event():
     """Initialize services on startup (non-blocking with timeouts) - API available immediately"""
     global analysis_service, llm_service, catalog_service, classification_service
     
-    logger.info("Starting service initialization in background...")
-    logger.info("API is available immediately - services will initialize asynchronously")
-    
-    # Start initialization in background task - don't block API startup
-    asyncio.create_task(initialize_services_background())
-    
-    logger.info("Startup event complete - API ready (services initializing in background)")
+    try:
+        logger.info("Starting service initialization in background...")
+        logger.info("API is available immediately - services will initialize asynchronously")
+        
+        # Start initialization in background task - don't block API startup
+        asyncio.create_task(initialize_services_background())
+        
+        logger.info("Startup event complete - API ready (services initializing in background)")
+    except Exception as e:
+        # Don't let startup errors crash the app - log and continue
+        logger.error(f"Startup event error (non-fatal): {e}", exc_info=True)
+        logger.info("API will continue to run - services may not be available")
 
 async def initialize_services_background():
     """Initialize services in background without blocking API startup"""
@@ -323,7 +333,12 @@ async def read_root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint - fast response for Render health checks"""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    # This endpoint must respond quickly for Render port detection
+    try:
+        return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        # Even if there's an error, return something so port is detected
+        return {"status": "healthy", "error": str(e)}
 
 @app.get("/health/live")
 async def liveness_check():
@@ -1140,4 +1155,7 @@ static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    # For local development
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port, reload=True)

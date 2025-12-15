@@ -26,7 +26,7 @@ services:
       pip install -r requirements.txt
       mkdir -p /tmp/chroma
     startCommand: |
-      cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      cd backend && python start.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
