@@ -8,7 +8,7 @@ services:
       cd backend
       pip install -r requirements.txt
     startCommand: |
-      cd backend && python run.py
+      cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -16,8 +16,6 @@ services:
         sync: false
       - key: HOST
         value: 0.0.0.0
-      - key: PORT
-        value: 8000
       - key: DEBUG
         value: "False"
       - key: MAX_FILE_SIZE

@@ -74,8 +74,9 @@ if __name__ == "__main__":
     # Get host and port from environment variables (for Render deployment)
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8000))
-    # Enable reload by default for development (disable in production by setting DEBUG=false)
-    reload = os.getenv("DEBUG", "True").lower() == "true"
+    # Disable reload by default for production (enable in development by setting DEBUG=true)
+    # Render sets DEBUG=False, so reload will be disabled in production
+    reload = os.getenv("DEBUG", "False").lower() == "true"
     
     # Check port availability
     print(f"[2/4] Checking port {port}...")
