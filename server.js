@@ -318,22 +318,6 @@ app.get('/api/jobs/:jobId/export/json', async (req, res) => {
   }
 });
 
-// WebSocket proxy for real-time updates
-const wss = new WebSocket.Server({ port: 8080 });
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const jobId = url.pathname.split('/').pop();
-
-  const backendWs = new WebSocket(
-    `${PYTHON_BACKEND_URL.replace('http', 'ws')}/ws/jobs/${jobId}`
-  );
-
-  backendWs.on('message', (data) => ws.send(data));
-  backendWs.on('close', () => ws.close());
-  ws.on('close', () => backendWs.close());
-});
-
 // Error handling middleware
 app.use((error, req, res, next) => {
   logger.error('Server error', { error: error.message, stack: error.stack });
@@ -349,8 +333,25 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
 });
 
-app.listen(PORT, () => {
+// Create HTTP server and attach WebSocket to it (same port for Render compatibility)
+const server = app.listen(PORT, () => {
   logger.info(`🚀 Node.js server running on port ${PORT}`);
   logger.info(`📡 Python backend: ${PYTHON_BACKEND_URL}`);
-  logger.info(`🌐 WebSocket server on port 8080`);
+  logger.info(`🌐 WebSocket server attached to main server on port ${PORT}`);
+});
+
+// WebSocket proxy for real-time updates (attached to same HTTP server)
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const jobId = url.pathname.split('/').pop();
+
+  const backendWs = new WebSocket(
+    `${PYTHON_BACKEND_URL.replace('http', 'ws')}/ws/jobs/${jobId}`
+  );
+
+  backendWs.on('message', (data) => ws.send(data));
+  backendWs.on('close', () => ws.close());
+  ws.on('close', () => backendWs.close());
 });

@@ -13,12 +13,6 @@ from typing import Dict, Any, List
 import uuid
 from datetime import datetime
 
-from .services.analysis_service import AnalysisService
-from .services.llm_service import LLMService
-from .services.rag_index import query_rag, get_collection_stats
-from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_negation_chunks
-from .services.catalog_service import CatalogService
-from .services.classification_service import ClassificationService
 from .models.catalog_models import (
     ClassificationRequest,
     ClassificationResult,
@@ -34,6 +28,24 @@ from .models.analysis_models import AnalysisMethod, LLMProvider
 
 # Set up logging
 logger = setup_logger(__name__)
+
+print("[boot] app.main imported", flush=True)
+
+# --- Lazy imports for heavy modules (prevents Render port-scan timeout) ---
+def _import_services():
+    from .services.analysis_service import AnalysisService
+    from .services.llm_service import LLMService
+    from .services.catalog_service import CatalogService
+    from .services.classification_service import ClassificationService
+    return AnalysisService, LLMService, CatalogService, ClassificationService
+
+def _import_rag_index():
+    from .services.rag_index import query_rag, get_collection_stats
+    return query_rag, get_collection_stats
+
+def _import_rag_retrieve():
+    from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_negation_chunks
+    return retrieve_rules, retrieve_rules_batch, get_negation_chunks
 
 def get_enum_value(value):
     """Safely get enum value, handling both enum objects and strings"""
@@ -136,66 +148,60 @@ async def initialize_services_background():
             logger.error(f"{service_name} initialization failed: {e}")
             return None
     
-    # Initialize AnalysisService with Excel mapping file (with timeout)
-    # Use lazy loading - don't load Excel file at startup, load it when needed
+    # Initialize AnalysisService (lazy import + lazy excel)
     try:
         def init_analysis_service():
-            # Don't load Excel file at startup - it will be loaded lazily when needed
-            # This makes startup much faster
+            AnalysisService, _, _, _ = _import_services()
             logger.info("Background: Initializing AnalysisService (Excel will load on first use)...")
-            service = AnalysisService(excel_mapping_path=None)  # Load Excel lazily
-            logger.info("Background: AnalysisService ready (Excel mapping will load on demand)")
-            return service
-        
-        # Run with shorter timeout since we're not loading Excel
-        result = await run_with_timeout(init_analysis_service, timeout_seconds=5.0, service_name="AnalysisService")
-        analysis_service = result
-        
+            return AnalysisService(excel_mapping_path=None)
+
+        analysis_service = await run_with_timeout(init_analysis_service, timeout_seconds=15.0, service_name="AnalysisService")
+        if analysis_service:
+            logger.info("Background: AnalysisService ready")
     except Exception as e:
-        logger.error(f"Failed to initialize AnalysisService: {e}")
+        logger.error(f"Failed to initialize AnalysisService: {e}", exc_info=True)
         analysis_service = None
-    
-    # Initialize LLMService (fast, no timeout needed but wrap for safety)
+
+    # Initialize LLMService
     try:
         def init_llm_service():
+            _, LLMService, _, _ = _import_services()
             return LLMService()
-        
-        result = await run_with_timeout(init_llm_service, timeout_seconds=10.0, service_name="LLMService")
-        llm_service = result
+
+        llm_service = await run_with_timeout(init_llm_service, timeout_seconds=15.0, service_name="LLMService")
         if llm_service:
             logger.info("Background: LLMService ready")
     except Exception as e:
-        logger.error(f"Failed to initialize LLMService: {e}")
+        logger.error(f"Failed to initialize LLMService: {e}", exc_info=True)
         llm_service = None
-    
-    # Initialize CatalogService (with timeout)
+
+    # Initialize CatalogService
     try:
         def init_catalog_service():
+            _, _, CatalogService, _ = _import_services()
             return CatalogService()
-        
-        result = await run_with_timeout(init_catalog_service, timeout_seconds=15.0, service_name="CatalogService")
-        catalog_service = result
+
+        catalog_service = await run_with_timeout(init_catalog_service, timeout_seconds=20.0, service_name="CatalogService")
         if catalog_service:
             logger.info("Background: CatalogService ready")
     except Exception as e:
-        logger.error(f"Failed to initialize CatalogService: {e}")
+        logger.error(f"Failed to initialize CatalogService: {e}", exc_info=True)
         catalog_service = None
-    
-    # Initialize ClassificationService (depends on CatalogService)
+
+    # Initialize ClassificationService
     try:
         if catalog_service:
             def init_classification_service():
+                _, _, _, ClassificationService = _import_services()
                 return ClassificationService(catalog_service=catalog_service)
-            
-            result = await run_with_timeout(init_classification_service, timeout_seconds=10.0, service_name="ClassificationService")
-            classification_service = result
+
+            classification_service = await run_with_timeout(init_classification_service, timeout_seconds=20.0, service_name="ClassificationService")
             if classification_service:
                 logger.info("Background: ClassificationService ready")
         else:
-            logger.debug("ClassificationService skipped (CatalogService unavailable)")
             classification_service = None
     except Exception as e:
-        logger.error(f"Failed to initialize ClassificationService: {e}")
+        logger.error(f"Failed to initialize ClassificationService: {e}", exc_info=True)
         classification_service = None
     
     logger.info("Background: All services initialized")
@@ -841,6 +847,7 @@ async def create_test_trace():
 async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
     """Query the RAG index for relevant document chunks"""
     try:
+        query_rag, _ = _import_rag_index()
         vectordb_dir = "/tmp/chroma"
         results = query_rag(
             vectordb_dir=vectordb_dir,
@@ -861,6 +868,7 @@ async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
 async def get_rag_stats():
     """Get statistics about the RAG index"""
     try:
+        _, get_collection_stats = _import_rag_index()
         vectordb_dir = "/tmp/chroma"
         stats = get_collection_stats(vectordb_dir)
         
@@ -877,6 +885,7 @@ async def get_rag_stats():
 async def retrieve_decision_rules(query: str, doc_id: str, k: int = 5):
     """Retrieve rules for a specific decision item (sector, country, etc.)"""
     try:
+        retrieve_rules, _, _ = _import_rag_retrieve()
         vectordb_dir = "/tmp/chroma"
         results = retrieve_rules(query, doc_id, k, vectordb_dir)
         
@@ -896,6 +905,7 @@ async def retrieve_decision_rules(query: str, doc_id: str, k: int = 5):
 async def retrieve_decision_rules_batch(queries: list, doc_id: str, k: int = 5):
     """Retrieve rules for multiple decision items in batch"""
     try:
+        _, retrieve_rules_batch, _ = _import_rag_retrieve()
         vectordb_dir = "/tmp/chroma"
         results = retrieve_rules_batch(queries, doc_id, k, vectordb_dir)
         
@@ -915,6 +925,7 @@ async def retrieve_decision_rules_batch(queries: list, doc_id: str, k: int = 5):
 async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
     """Retrieve only negation-bearing chunks for a decision item"""
     try:
+        _, _, get_negation_chunks = _import_rag_retrieve()
         vectordb_dir = "/tmp/chroma"
         results = get_negation_chunks(query, doc_id, k, vectordb_dir)
         
@@ -934,6 +945,7 @@ async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
 async def debug_rag(fund_id: str = "5800", k: int = 5):
     """Quick debug endpoint to view chunks without running full analysis"""
     try:
+        retrieve_rules, _, _ = _import_rag_retrieve()
         # Use fund_id as doc_id and a generic query for investment rules
         query = "investment rules allowed restricted sectors countries instruments"
         doc_id = fund_id
