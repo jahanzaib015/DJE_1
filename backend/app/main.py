@@ -36,21 +36,7 @@ import os
 PORT = os.getenv("PORT", "8000")
 print(f"[boot] PORT environment variable: {PORT}", flush=True)
 
-# --- Lazy imports for heavy modules (prevents Render port-scan timeout) ---
-def _import_services():
-    from .services.analysis_service import AnalysisService
-    from .services.llm_service import LLMService
-    from .services.catalog_service import CatalogService
-    from .services.classification_service import ClassificationService
-    return AnalysisService, LLMService, CatalogService, ClassificationService
-
-def _import_rag_index():
-    from .services.rag_index import query_rag, get_collection_stats
-    return query_rag, get_collection_stats
-
-def _import_rag_retrieve():
-    from .services.rag_retrieve import retrieve_rules, retrieve_rules_batch, get_negation_chunks
-    return retrieve_rules, retrieve_rules_batch, get_negation_chunks
+# --- Lazy imports removed - services loaded on demand ---
 
 def get_enum_value(value):
     """Safely get enum value, handling both enum objects and strings"""
@@ -109,112 +95,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize services (will be done in startup event to avoid blocking)
+# ----------------------------
+# LAZY IMPORTS / LAZY SERVICES
+# ----------------------------
 analysis_service = None
 llm_service = None
 catalog_service = None
 classification_service = None
 
+def get_analysis_service():
+    global analysis_service
+    if analysis_service is None:
+        from .services.analysis_service import AnalysisService
+        analysis_service = AnalysisService(excel_mapping_path=None)
+    return analysis_service
+
+def get_llm_service():
+    global llm_service
+    if llm_service is None:
+        from .services.llm_service import LLMService
+        llm_service = LLMService()
+    return llm_service
+
+def get_catalog_service():
+    global catalog_service
+    if catalog_service is None:
+        from .services.catalog_service import CatalogService
+        catalog_service = CatalogService()
+    return catalog_service
+
+def get_classification_service():
+    global classification_service
+    if classification_service is None:
+        cs = get_catalog_service()
+        from .services.classification_service import ClassificationService
+        classification_service = ClassificationService(catalog_service=cs)
+    return classification_service
+
 @app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup (non-blocking with timeouts) - API available immediately"""
-    global analysis_service, llm_service, catalog_service, classification_service
-    
-    try:
-        logger.info("Starting service initialization in background...")
-        logger.info("API is available immediately - services will initialize asynchronously")
-        
-        # Start initialization in background task - don't block API startup
-        asyncio.create_task(initialize_services_background())
-        
-        logger.info("Startup event complete - API ready (services initializing in background)")
-    except Exception as e:
-        # Don't let startup errors crash the app - log and continue
-        logger.error(f"Startup event error (non-fatal): {e}", exc_info=True)
-        logger.info("API will continue to run - services may not be available")
+async def startup_cleanup():
+    """Cleanup old jobs on startup (moved from import-time to prevent blocking)"""
+    await asyncio.to_thread(cleanup_old_jobs)
+    logger.info("Startup cleanup complete - API ready (services will load on demand)")
 
-async def initialize_services_background():
-    """Initialize services in background without blocking API startup"""
-    global analysis_service, llm_service, catalog_service, classification_service
-    
-    logger.info("Background: Initializing services...")
-    
-    # Helper function to run blocking operations with timeout
-    async def run_with_timeout(coro_or_func, timeout_seconds: float = 30.0, service_name: str = "Service"):
-        """Run a blocking operation in a thread with timeout"""
-        try:
-            if asyncio.iscoroutine(coro_or_func):
-                return await asyncio.wait_for(coro_or_func, timeout=timeout_seconds)
-            else:
-                # Run blocking function in thread pool
-                return await asyncio.wait_for(
-                    asyncio.to_thread(coro_or_func),
-                    timeout=timeout_seconds
-                )
-        except asyncio.TimeoutError:
-            logger.error(f"{service_name} initialization timed out after {timeout_seconds}s")
-            return None
-        except Exception as e:
-            logger.error(f"{service_name} initialization failed: {e}")
-            return None
-    
-    # Initialize AnalysisService (lazy import + lazy excel)
-    try:
-        def init_analysis_service():
-            AnalysisService, _, _, _ = _import_services()
-            logger.info("Background: Initializing AnalysisService (Excel will load on first use)...")
-            return AnalysisService(excel_mapping_path=None)
-
-        analysis_service = await run_with_timeout(init_analysis_service, timeout_seconds=15.0, service_name="AnalysisService")
-        if analysis_service:
-            logger.info("Background: AnalysisService ready")
-    except Exception as e:
-        logger.error(f"Failed to initialize AnalysisService: {e}", exc_info=True)
-        analysis_service = None
-
-    # Initialize LLMService
-    try:
-        def init_llm_service():
-            _, LLMService, _, _ = _import_services()
-            return LLMService()
-
-        llm_service = await run_with_timeout(init_llm_service, timeout_seconds=15.0, service_name="LLMService")
-        if llm_service:
-            logger.info("Background: LLMService ready")
-    except Exception as e:
-        logger.error(f"Failed to initialize LLMService: {e}", exc_info=True)
-        llm_service = None
-
-    # Initialize CatalogService
-    try:
-        def init_catalog_service():
-            _, _, CatalogService, _ = _import_services()
-            return CatalogService()
-
-        catalog_service = await run_with_timeout(init_catalog_service, timeout_seconds=20.0, service_name="CatalogService")
-        if catalog_service:
-            logger.info("Background: CatalogService ready")
-    except Exception as e:
-        logger.error(f"Failed to initialize CatalogService: {e}", exc_info=True)
-        catalog_service = None
-
-    # Initialize ClassificationService
-    try:
-        if catalog_service:
-            def init_classification_service():
-                _, _, _, ClassificationService = _import_services()
-                return ClassificationService(catalog_service=catalog_service)
-
-            classification_service = await run_with_timeout(init_classification_service, timeout_seconds=20.0, service_name="ClassificationService")
-            if classification_service:
-                logger.info("Background: ClassificationService ready")
-        else:
-            classification_service = None
-    except Exception as e:
-        logger.error(f"Failed to initialize ClassificationService: {e}", exc_info=True)
-        classification_service = None
-    
-    logger.info("Background: All services initialized")
+# Services are now loaded lazily on first use via get_*_service() functions
 
 # Lazy initialization - create handlers when first needed
 file_handler = None
@@ -298,8 +222,7 @@ def cleanup_old_jobs():
         save_jobs()
         logger.debug(f"Cleaned up {len(jobs_to_remove)} old jobs")
 
-# Cleanup old jobs on startup
-cleanup_old_jobs()
+# Cleanup old jobs moved to startup event (import-time work can delay binding)
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -349,15 +272,15 @@ async def liveness_check():
 async def readiness_check():
     """Readiness check - verify services are ready"""
     from fastapi import Response
+    # Services load on demand, so we're always ready
     ready = {
         "status": "ready",
         "services": {
-            "analysis_service": analysis_service is not None,
-            "llm_service": llm_service is not None
+            "analysis_service": True,  # Will load on first use
+            "llm_service": True  # Will load on first use
         }
     }
-    status_code = 200 if ready["services"]["analysis_service"] else 503
-    return Response(content=json.dumps(ready), status_code=status_code, media_type="application/json")
+    return Response(content=json.dumps(ready), status_code=200, media_type="application/json")
 
 # Backward-compatible health endpoint under /api
 @app.get("/api/health")
@@ -367,16 +290,10 @@ async def health_check_api():
 @app.get("/api/models")
 async def get_available_models():
     """Get available LLM models"""
-    if llm_service is None:
-        return {
-            "ollama_models": [],
-            "openai_models": ["gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"],
-            "default_model": "gpt-5.1",
-            "warning": "LLM service not initialized"
-        }
+    svc = get_llm_service()
     return {
-        "ollama_models": llm_service.get_ollama_models() if llm_service else [],
-        "openai_models": llm_service.get_openai_models() if llm_service else ["gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"],
+        "ollama_models": svc.get_ollama_models(),
+        "openai_models": svc.get_openai_models(),
         "default_model": "gpt-5.1"
     }
 
@@ -581,9 +498,10 @@ async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id
                 logger.warning("⚠️ Falling back to original text for analysis")
         
         # Run analysis - use vision pipeline for image-only PDFs
+        svc = get_analysis_service()
         if is_image_only:
             logger.info(f"📸 Using vision pipeline for image-only PDF: {request.file_path}")
-            result = await analysis_service.analyze_document_vision(
+            result = await svc.analyze_document_vision(
                 pdf_path=request.file_path,
                 analysis_method=request.analysis_method,
                 llm_provider=request.llm_provider,
@@ -596,7 +514,7 @@ async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id
             text_for_analysis = markdown_text if markdown_text else text
             logger.info(f"📄 Using {'markdown' if markdown_text else 'original text'} for analysis")
             
-            result = await analysis_service.analyze_document(
+            result = await svc.analyze_document(
                 text=text_for_analysis,
                 analysis_method=request.analysis_method,
                 llm_provider=request.llm_provider,
@@ -691,9 +609,10 @@ async def export_excel(job_id: str):
         raise HTTPException(status_code=400, detail="Job not completed yet")
     
     # If Excel mapping is available, export the full mapping table (137 entries)
-    if analysis_service and analysis_service.excel_mapping and len(analysis_service.excel_mapping.get_all_entries()) > 0:
+    svc = get_analysis_service()
+    if svc and svc.excel_mapping and len(svc.excel_mapping.get_all_entries()) > 0:
         excel_path = os.path.join(get_file_handler().export_dir, f"full_mapping_results_{job_id}.xlsx")
-        analysis_service.excel_mapping.export_to_excel(excel_path)
+        svc.excel_mapping.export_to_excel(excel_path)
         return FileResponse(
             path=excel_path,
             filename=f"instrument_mapping_full_{job_id}.xlsx",
@@ -719,9 +638,10 @@ async def export_mapping_excel(job_id: str):
         raise HTTPException(status_code=400, detail="Job not completed yet")
     
     # Check if Excel mapping path exists in result
-    if analysis_service and analysis_service.excel_mapping:
+    svc = get_analysis_service()
+    if svc and svc.excel_mapping:
         excel_path = os.path.join(get_file_handler().export_dir, f"mapping_results_{job_id}.xlsx")
-        analysis_service.excel_mapping.export_to_excel(excel_path)
+        svc.excel_mapping.export_to_excel(excel_path)
         return FileResponse(
             path=excel_path,
             filename=f"instrument_mapping_{job_id}.xlsx",
@@ -862,7 +782,7 @@ async def create_test_trace():
 async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
     """Query the RAG index for relevant document chunks"""
     try:
-        query_rag, _ = _import_rag_index()
+        from .services.rag_index import query_rag
         vectordb_dir = "/tmp/chroma"
         results = query_rag(
             vectordb_dir=vectordb_dir,
@@ -883,7 +803,7 @@ async def query_rag_index(query: str, n_results: int = 5, doc_id: str = None):
 async def get_rag_stats():
     """Get statistics about the RAG index"""
     try:
-        _, get_collection_stats = _import_rag_index()
+        from .services.rag_index import get_collection_stats
         vectordb_dir = "/tmp/chroma"
         stats = get_collection_stats(vectordb_dir)
         
@@ -900,7 +820,7 @@ async def get_rag_stats():
 async def retrieve_decision_rules(query: str, doc_id: str, k: int = 5):
     """Retrieve rules for a specific decision item (sector, country, etc.)"""
     try:
-        retrieve_rules, _, _ = _import_rag_retrieve()
+        from .services.rag_retrieve import retrieve_rules
         vectordb_dir = "/tmp/chroma"
         results = retrieve_rules(query, doc_id, k, vectordb_dir)
         
@@ -920,7 +840,7 @@ async def retrieve_decision_rules(query: str, doc_id: str, k: int = 5):
 async def retrieve_decision_rules_batch(queries: list, doc_id: str, k: int = 5):
     """Retrieve rules for multiple decision items in batch"""
     try:
-        _, retrieve_rules_batch, _ = _import_rag_retrieve()
+        from .services.rag_retrieve import retrieve_rules_batch
         vectordb_dir = "/tmp/chroma"
         results = retrieve_rules_batch(queries, doc_id, k, vectordb_dir)
         
@@ -940,7 +860,7 @@ async def retrieve_decision_rules_batch(queries: list, doc_id: str, k: int = 5):
 async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
     """Retrieve only negation-bearing chunks for a decision item"""
     try:
-        _, _, get_negation_chunks = _import_rag_retrieve()
+        from .services.rag_retrieve import get_negation_chunks
         vectordb_dir = "/tmp/chroma"
         results = get_negation_chunks(query, doc_id, k, vectordb_dir)
         
@@ -960,7 +880,7 @@ async def retrieve_negation_chunks(query: str, doc_id: str, k: int = 5):
 async def debug_rag(fund_id: str = "5800", k: int = 5):
     """Quick debug endpoint to view chunks without running full analysis"""
     try:
-        retrieve_rules, _, _ = _import_rag_retrieve()
+        from .services.rag_retrieve import retrieve_rules
         # Use fund_id as doc_id and a generic query for investment rules
         query = "investment rules allowed restricted sectors countries instruments"
         doc_id = fund_id
@@ -993,13 +913,8 @@ async def debug_rag(fund_id: str = "5800", k: int = 5):
 async def classify_document(request: ClassificationRequest):
     """Classify a document against the investment catalog"""
     try:
-        if not classification_service:
-            raise HTTPException(
-                status_code=503, 
-                detail="Classification service not available. Please check server logs."
-            )
-        
-        result = classification_service.classify_document(request)
+        svc = get_classification_service()
+        result = svc.classify_document(request)
         return result
         
     except Exception as e:
@@ -1011,13 +926,8 @@ async def classify_document(request: ClassificationRequest):
 async def get_catalog(active_only: bool = True):
     """Get all catalog offerings"""
     try:
-        if not catalog_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Catalog service not available. Please check server logs."
-            )
-        
-        items = catalog_service.get_all_offerings(active_only=active_only)
+        svc = get_catalog_service()
+        items = svc.get_all_offerings(active_only=active_only)
         return items
         
     except Exception as e:
@@ -1029,13 +939,8 @@ async def get_catalog(active_only: bool = True):
 async def get_offering(offering_id: str):
     """Get a specific catalog offering by ID"""
     try:
-        if not catalog_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Catalog service not available. Please check server logs."
-            )
-        
-        item = catalog_service.get_offering_by_id(offering_id)
+        svc = get_catalog_service()
+        item = svc.get_offering_by_id(offering_id)
         if not item:
             raise HTTPException(status_code=404, detail=f"Offering '{offering_id}' not found")
         
@@ -1052,26 +957,22 @@ async def get_offering(offering_id: str):
 async def create_offering(offering: InvestmentOffering):
     """Create a new catalog offering"""
     try:
-        if not catalog_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Catalog service not available. Please check server logs."
-            )
-        
-        success = catalog_service.add_offering(offering)
+        svc = get_catalog_service()
+        success = svc.add_offering(offering)
         if not success:
             raise HTTPException(
                 status_code=400,
                 detail=f"Failed to create offering. ID '{offering.id}' may already exist."
             )
         
-        created = catalog_service.get_offering_by_id(offering.id)
+        created = svc.get_offering_by_id(offering.id)
         if not created:
             raise HTTPException(status_code=500, detail="Failed to retrieve created offering")
         
         # Rebuild classification index
-        if classification_service:
-            classification_service._rebuild_index()
+        cls_svc = get_classification_service()
+        if cls_svc:
+            cls_svc._rebuild_index()
         
         return created
         
@@ -1086,29 +987,26 @@ async def create_offering(offering: InvestmentOffering):
 async def update_offering(offering_id: str, offering: InvestmentOffering):
     """Update an existing catalog offering"""
     try:
-        if not catalog_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Catalog service not available. Please check server logs."
-            )
+        svc = get_catalog_service()
         
         # Ensure ID matches
         offering.id = offering_id
         
-        success = catalog_service.update_offering(offering_id, offering)
+        success = svc.update_offering(offering_id, offering)
         if not success:
             raise HTTPException(
                 status_code=404,
                 detail=f"Offering '{offering_id}' not found"
             )
         
-        updated = catalog_service.get_offering_by_id(offering_id)
+        updated = svc.get_offering_by_id(offering_id)
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to retrieve updated offering")
         
         # Rebuild classification index
-        if classification_service:
-            classification_service._rebuild_index()
+        cls_svc = get_classification_service()
+        if cls_svc:
+            cls_svc._rebuild_index()
         
         return updated
         
@@ -1123,13 +1021,8 @@ async def update_offering(offering_id: str, offering: InvestmentOffering):
 async def delete_offering(offering_id: str):
     """Delete a catalog offering"""
     try:
-        if not catalog_service:
-            raise HTTPException(
-                status_code=503,
-                detail="Catalog service not available. Please check server logs."
-            )
-        
-        success = catalog_service.delete_offering(offering_id)
+        svc = get_catalog_service()
+        success = svc.delete_offering(offering_id)
         if not success:
             raise HTTPException(
                 status_code=404,
@@ -1137,8 +1030,9 @@ async def delete_offering(offering_id: str):
             )
         
         # Rebuild classification index
-        if classification_service:
-            classification_service._rebuild_index()
+        cls_svc = get_classification_service()
+        if cls_svc:
+            cls_svc._rebuild_index()
         
         return {"success": True, "message": f"Offering '{offering_id}' deleted successfully"}
         
