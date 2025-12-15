@@ -533,6 +533,7 @@ Recognize these as the SAME instrument types (but use the EXACT name from docume
 - "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures" = "Currency Futures"
 - "derivatives" includes: options, futures, forwards, swaps, warrants, structured products
 - German terms: "Aktien" = stocks/shares, "Anleihen" = bonds, "Schatzanweisungen" = treasury bills, "Bezugsrechte" = subscription rights, "Pfandbriefe" = covered bonds, etc.
+- **CRITICAL FOR INDEX FUTURES/OPTIONS**: Any variant of "index future" (e.g., "equity index future", "equity index futures", "Aktienindexfutures") should be treated as "index future" for rule matching. Any variant of "index option" (e.g., "equity index option", "equity index options", "Aktienindexoptionen") should be treated as "index option" for rule matching. Extract the exact name from the document, but the system will map it to the base category.
 - **IMPORTANT**: Use the EXACT name as it appears in the document - do not translate unless the document itself uses both languages
 
 **WHAT TO EXTRACT:**
@@ -1643,6 +1644,7 @@ Recognize these as the SAME instrument types (but use the EXACT name from docume
 - "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures" = "Currency Futures"
 - "derivatives" includes: options, futures, forwards, swaps, warrants, structured products
 - German terms: "Aktien" = stocks/shares, "Anleihen" = bonds, "Schatzanweisungen" = treasury bills, "Bezugsrechte" = subscription rights, "Pfandbriefe" = covered bonds, etc.
+- **CRITICAL FOR INDEX FUTURES/OPTIONS**: Any variant of "index future" (e.g., "equity index future", "equity index futures", "Aktienindexfutures") should be treated as "index future" for rule matching. Any variant of "index option" (e.g., "equity index option", "equity index options", "Aktienindexoptionen") should be treated as "index option" for rule matching. Extract the exact name from the document, but the system will map it to the base category.
 - **IMPORTANT**: Use the EXACT name as it appears in the document - do not translate unless the document itself uses both languages
 
 **WHAT TO EXTRACT:**

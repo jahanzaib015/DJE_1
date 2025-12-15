@@ -249,6 +249,7 @@ Recognize these as the SAME instrument types (use the exact name from document):
 - "FX Forwards" = "forex forwards" = "foreign exchange forwards" = "FX" = "forex"
 - "currency futures" = "FX futures" = "foreign exchange futures" = "forex futures"
 - "derivatives" includes: options, futures, forwards, swaps, warrants
+- **CRITICAL FOR INDEX FUTURES/OPTIONS**: Any variant of "index future" (e.g., "equity index future", "equity index futures", "Aktienindexfutures") should be treated as "index future" for rule matching. Any variant of "index option" (e.g., "equity index option", "equity index options", "Aktienindexoptionen") should be treated as "index option" for rule matching. Extract the exact name from the document, but the system will map it to the base category.
 - German terms: "Aktien" = stocks/shares, "Anleihen" = bonds, "Schatzanweisungen" = treasury bills, "Bezugsrechte" = subscription rights, etc.
 
 **WHAT TO EXTRACT:**

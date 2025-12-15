@@ -2398,6 +2398,8 @@ class AnalysisService:
                             # "equity option" / "equity options" should match "stock_option"
                             # "equity index future" should match "index_future"
                             # "equity index option" should match "index_option"
+                            # CRITICAL: Any variant of "index future" (equity index future, etc.) should match "index_future"
+                            # CRITICAL: Any variant of "index option" (equity index option, etc.) should match "index_option"
                             equity_derivative_mappings = {
                                 ("equity", "future"): ("single", "stock", "future"),
                                 ("equity", "futures"): ("single", "stock", "future"),
@@ -2413,6 +2415,27 @@ class AnalysisService:
                                 expected_key_words = set(equity_derivative_mappings[instrument_tuple])
                                 if expected_key_words.issubset(significant_key_words):
                                     return True
+                            
+                            # CRITICAL FIX: Handle any variant of index future/option matching to base category
+                            # If instrument contains "index" and "future" (or "futures"), and key is "index_future", match it
+                            # If instrument contains "index" and "option" (or "options"), and key is "index_option", match it
+                            # This ensures "equity index future" -> "index_future" and "equity index option" -> "index_option"
+                            has_index = "index" in significant_instrument_words
+                            has_future = "future" in significant_instrument_words or "futures" in significant_instrument_words
+                            has_option = "option" in significant_instrument_words or "options" in significant_instrument_words
+                            
+                            # Check if key is index_future
+                            is_index_future = "index" in significant_key_words and "future" in significant_key_words
+                            # Check if key is index_option
+                            is_index_option = "index" in significant_key_words and "option" in significant_key_words
+                            
+                            # Match any variant of index future to index_future
+                            if has_index and has_future and is_index_future:
+                                return True
+                            
+                            # Match any variant of index option to index_option
+                            if has_index and has_option and is_index_option:
+                                return True
                             
                             # Special handling for interest rate futures:
                             # "interest rate future" / "interest rate futures" / "zinsfutures" should match "bond_future"
@@ -2695,6 +2718,67 @@ class AnalysisService:
         # Add conflicts to notes (using validated response)
         for conflict in validated_response.conflicts:
             data["notes"].append(f"Conflict: {conflict.category} - {conflict.detail}")
+        
+        # PRE-PROCESSING: Ensure index future/option variants are matched correctly
+        # CRITICAL: If any variant of "index future" or "index option" was found in the document,
+        # apply that rule to the base "index_future" or "index_option" category
+        logger.info("🔍 Pre-processing: Checking for index future/option variant matches...")
+        index_future_variants = [
+            "equity index future", "equity index futures", "aktienindexfutures",
+            "equity-index-future", "equity-index-futures", "index future", "index futures"
+        ]
+        index_option_variants = [
+            "equity index option", "equity index options", "aktienindexoptionen",
+            "equity-index-option", "equity-index-options", "index option", "index options"
+        ]
+        
+        # Check if any variant was found in the LLM response (use instrument_rules from the loop above)
+        # We need to check the original instrument_rules list that was processed
+        # Since we already processed them, we'll check the sections to see if any variant was matched
+        # But we can also check the original rules by looking at what was extracted
+        # Actually, the best approach is to check the sections after matching and look for any variant matches
+        # that might have been missed. Let's check if we have any rules that contain index future/option variants
+        # by examining what was actually matched in the previous loop
+        
+        # Re-check instrument_rules to find variants that might not have matched
+        for rule in instrument_rules:
+            instrument_normalized = self._normalize_instrument_name(rule.instrument)
+            instrument_lower = instrument_normalized.lower()
+            
+            # Check if this is an index future variant
+            is_index_future_variant = any(variant in instrument_lower for variant in index_future_variants)
+            # Check if this is an index option variant  
+            is_index_option_variant = any(variant in instrument_lower for variant in index_option_variants)
+            
+            if is_index_future_variant and "future" in data["sections"]:
+                # Apply this rule to index_future
+                if "index_future" in data["sections"]["future"]:
+                    current_value = data["sections"]["future"]["index_future"]
+                    # Only apply if not already set by explicit rule, or if this is more specific
+                    if current_value.get("allowed") is None or "conservative default" in current_value.get("note", ""):
+                        evidence_text = rule.reason if rule.reason else f"{rule.instrument} is {'allowed' if rule.allowed else 'prohibited'}"
+                        data["sections"]["future"]["index_future"] = {
+                            "allowed": rule.allowed,
+                            "confidence": 0.8,
+                            "note": f"Instrument rule: {rule.instrument} → index_future - {evidence_text} (Confidence: 80%)",
+                            "evidence": {"page": 1, "text": evidence_text}
+                        }
+                        logger.info(f"✅ Mapped '{rule.instrument}' → 'index_future' (allowed={rule.allowed})")
+            
+            if is_index_option_variant and "option" in data["sections"]:
+                # Apply this rule to index_option
+                if "index_option" in data["sections"]["option"]:
+                    current_value = data["sections"]["option"]["index_option"]
+                    # Only apply if not already set by explicit rule, or if this is more specific
+                    if current_value.get("allowed") is None or "conservative default" in current_value.get("note", ""):
+                        evidence_text = rule.reason if rule.reason else f"{rule.instrument} is {'allowed' if rule.allowed else 'prohibited'}"
+                        data["sections"]["option"]["index_option"] = {
+                            "allowed": rule.allowed,
+                            "confidence": 0.8,
+                            "note": f"Instrument rule: {rule.instrument} → index_option - {evidence_text} (Confidence: 80%)",
+                            "evidence": {"page": 1, "text": evidence_text}
+                        }
+                        logger.info(f"✅ Mapped '{rule.instrument}' → 'index_option' (allowed={rule.allowed})")
         
         # POST-PROCESSING: 
         # CRITICAL: Conservative approach for derivatives - default to NOT ALLOWED unless explicitly allowed
