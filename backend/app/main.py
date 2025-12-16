@@ -132,12 +132,6 @@ def get_classification_service():
         classification_service = ClassificationService(catalog_service=cs)
     return classification_service
 
-@app.on_event("startup")
-async def startup_cleanup():
-    """Cleanup old jobs on startup (moved from import-time to prevent blocking)"""
-    await asyncio.to_thread(cleanup_old_jobs)
-    logger.info("Startup cleanup complete - API ready (services will load on demand)")
-
 # Services are now loaded lazily on first use via get_*_service() functions
 
 # Lazy initialization - create handlers when first needed
@@ -189,12 +183,6 @@ def save_jobs():
     except Exception as e:
         logger.error(f"Error saving jobs to persistence: {e}")
 
-# Load existing jobs in background (don't block startup)
-@app.on_event("startup")
-async def load_jobs_background():
-    """Load jobs in background without blocking"""
-    await asyncio.to_thread(load_jobs)
-
 # Cleanup old jobs (older than 24 hours)
 def cleanup_old_jobs():
     """Remove jobs older than 24 hours"""
@@ -222,7 +210,31 @@ def cleanup_old_jobs():
         save_jobs()
         logger.debug(f"Cleaned up {len(jobs_to_remove)} old jobs")
 
-# Cleanup old jobs moved to startup event (import-time work can delay binding)
+# Startup events moved to background tasks to prevent blocking port binding
+# These run AFTER the server has started and bound to the port
+@app.on_event("startup")
+async def startup_background_tasks():
+    """Run background initialization tasks after server starts (non-blocking)"""
+    # Schedule background tasks that won't block port binding
+    # This function returns immediately - FastAPI won't wait for the background task
+    async def background_init():
+        try:
+            # Small delay to ensure server is fully up
+            await asyncio.sleep(0.1)
+            # Load jobs in background
+            await asyncio.to_thread(load_jobs)
+            # Cleanup old jobs in background
+            await asyncio.to_thread(cleanup_old_jobs)
+            logger.info("Background startup tasks complete - API ready (services will load on demand)")
+        except Exception as e:
+            # Don't crash the app if background tasks fail
+            logger.error(f"Background startup task error (non-fatal): {e}")
+    
+    # Start background task without awaiting (truly non-blocking)
+    # This returns immediately, allowing FastAPI to continue startup
+    asyncio.create_task(background_init())
+    # Return immediately - don't await anything
+    return
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -255,13 +267,10 @@ async def read_root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint - fast response for Render health checks"""
-    # This endpoint must respond quickly for Render port detection
-    try:
-        return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-    except Exception as e:
-        # Even if there's an error, return something so port is detected
-        return {"status": "healthy", "error": str(e)}
+    """Health check endpoint - ultra-fast response for Render port detection"""
+    # This endpoint must respond IMMEDIATELY without any dependencies
+    # Render uses this to detect that the port is bound and responding
+    return {"status": "healthy"}
 
 @app.get("/health/live")
 async def liveness_check():
@@ -285,7 +294,8 @@ async def readiness_check():
 # Backward-compatible health endpoint under /api
 @app.get("/api/health")
 async def health_check_api():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    """Backward-compatible health endpoint"""
+    return {"status": "healthy"}
 
 @app.get("/api/models")
 async def get_available_models():

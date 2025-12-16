@@ -37,7 +37,7 @@ def main():
         print(f"ERROR: Invalid PORT: {e}", flush=True)
         sys.exit(1)
     
-    # Test import
+    # Test import (but don't fail if it's slow - just log)
     print("Testing app import...", flush=True)
     try:
         from app.main import app
@@ -50,18 +50,24 @@ def main():
     
     print("", flush=True)
     print(f"Starting uvicorn on {host}:{port}...", flush=True)
+    print("⚠️  IMPORTANT: Server must bind to port within 60 seconds for Render", flush=True)
     print("", flush=True)
     
-    # Start uvicorn
+    # Start uvicorn with minimal configuration for fastest startup
     try:
         import uvicorn
+        # Use minimal config to ensure fastest possible startup
+        # access_log=False reduces overhead
+        # log_level="warning" reduces logging overhead during startup
         uvicorn.run(
             "app.main:app",
             host=host,
             port=port_int,
-            log_level="info",
+            log_level="warning",  # Reduced logging for faster startup
             timeout_keep_alive=30,
-            access_log=False
+            access_log=False,
+            # Don't wait for workers or other delays
+            loop="auto"  # Let uvicorn choose the fastest loop
         )
     except KeyboardInterrupt:
         print("\nServer stopped by user", flush=True)
