@@ -37,9 +37,9 @@ class OpenAIProvider(LLMProviderInterface):
 
         self.base_url = "https://api.openai.com/v1"
         # Preferred model order (fastest first for speed optimization)
-        # gpt-5.1 is the latest and most capable model, gpt-4o-mini is 2-3x faster than gpt-4o with similar quality
+        # gpt-5.2 is the latest and most capable model, gpt-4o-mini is 2-3x faster than gpt-4o with similar quality
         # Removed deprecated models: gpt-4, gpt-4-turbo, gpt-3.5-turbo
-        self.model_priority = ["gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"]
+        self.model_priority = ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4o-mini"]
 
     async def analyze_document(self, text: str, model: str) -> Dict:
         """Analyze document using OpenAI ChatGPT with automatic fallback chain"""
@@ -84,8 +84,8 @@ class OpenAIProvider(LLMProviderInterface):
         elif model == "gpt-4-turbo":
             # GPT-4-turbo has larger context, but be conservative
             max_text_length = 25000
-        elif model == "gpt-5" or model == "gpt-5.1":
-            # GPT-5/GPT-5.1 assumed to have large context window (128k+ tokens) - support very large files
+        elif model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
+            # GPT-5/GPT-5.1/GPT-5.2 assumed to have large context window (128k+ tokens) - support very large files
             max_text_length = 1000000  # 1MB chars for very large documents (150+ pages)
         else:
             max_text_length = 500000  # 500k chars for large documents (GPT-4o, etc.)
@@ -555,19 +555,19 @@ Return ONLY valid JSON matching the required schema."""
             }
             
             # Set temperature based on model requirements
-            # gpt-5/gpt-5.1 only supports default temperature (1), not 0
-            if model == "gpt-5" or model == "gpt-5.1":
-                # gpt-5/gpt-5.1 requires default temperature (1) - don't set it or set to 1
+            # gpt-5/gpt-5.1/gpt-5.2 only supports default temperature (1), not 0
+            if model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
+                # gpt-5/gpt-5.1/gpt-5.2 requires default temperature (1) - don't set it or set to 1
                 payload["temperature"] = 1
             else:
                 # Other models can use temperature 0 for deterministic responses
                 payload["temperature"] = 0
             
             # Use correct parameter name based on model
-            # Newer models (gpt-5, gpt-5.1, gpt-4.1, o1, etc.) use max_completion_tokens
+            # Newer models (gpt-5, gpt-5.1, gpt-5.2, gpt-4.1, o1, etc.) use max_completion_tokens
             # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
-            if model in ["gpt-5", "gpt-5.1"]:
-                # GPT-5/5.1 have large context windows - use higher limit to avoid truncation
+            if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
+                # GPT-5/5.1/5.2 have large context windows - use higher limit to avoid truncation
                 payload["max_completion_tokens"] = 8000
             elif model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-4.1"]:
                 payload["max_completion_tokens"] = 4000

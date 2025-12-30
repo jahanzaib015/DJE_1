@@ -21,7 +21,7 @@ function App() {
   const [settings, setSettings] = useState<SettingsType>({
     analysisMethod: 'llm',
     llmProvider: 'openai',
-    model: 'gpt-5.1',
+    model: 'gpt-5.2',
     fundId: '5800'
   });
 

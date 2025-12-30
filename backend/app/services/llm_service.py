@@ -334,8 +334,8 @@ class LLMService:
         if model == "gpt-4":
             # GPT-4 has 8192 token limit: reserve ~1200 for enhanced prompts, ~2000 for completion
             max_text_length = 10000  # Conservative limit for GPT-4's 8k context
-        elif model == "gpt-5" or model == "gpt-5.1":
-            # GPT-5/GPT-5.1 assumed to have large context window (128k+ tokens) - support very large files
+        elif model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
+            # GPT-5/GPT-5.1/GPT-5.2 assumed to have large context window (128k+ tokens) - support very large files
             max_text_length = 1000000  # 1MB chars for very large documents (150+ pages)
         else:
             # Modern models (GPT-4o, GPT-4o-mini) have 128k context window (~512k chars)
@@ -678,19 +678,19 @@ Before finishing, you MUST verify:
             }
             
             # Set temperature based on model requirements
-            # gpt-5/gpt-5.1 only supports default temperature (1), not 0
-            if model == "gpt-5" or model == "gpt-5.1":
-                # gpt-5/gpt-5.1 requires default temperature (1)
+            # gpt-5/gpt-5.1/gpt-5.2 only supports default temperature (1), not 0
+            if model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
+                # gpt-5/gpt-5.1/gpt-5.2 requires default temperature (1)
                 api_params["temperature"] = 1
             else:
                 # Other models can use temperature 0 for deterministic responses
                 api_params["temperature"] = 0  # Deterministic, evidence-based mode
             
             # Use correct parameter name based on model
-            # Newer models (gpt-5, gpt-5.1, gpt-4.1, o1, etc.) use max_completion_tokens
+            # Newer models (gpt-5, gpt-5.1, gpt-5.2, gpt-4.1, o1, etc.) use max_completion_tokens
             # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
-            if model in ["gpt-5", "gpt-5.1"]:
-                # GPT-5/5.1 have large context windows - use higher limit to avoid truncation
+            if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
+                # GPT-5/5.1/5.2 have large context windows - use higher limit to avoid truncation
                 api_params["max_completion_tokens"] = 8000
             elif model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-4.1"]:
                 api_params["max_completion_tokens"] = 4000
@@ -852,7 +852,7 @@ Before finishing, you MUST verify:
         # Calculate safe text limit based on model (same as primary method)
         if model == "gpt-4":
             max_text_length = 10000
-        elif model == "gpt-5" or model == "gpt-5.1":
+        elif model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
             max_text_length = 1000000
         else:
             max_text_length = 500000
@@ -946,13 +946,13 @@ Return ONLY valid JSON:
             }
             
             # Set temperature based on model requirements
-            if model == "gpt-5" or model == "gpt-5.1":
+            if model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
                 api_params["temperature"] = 1
             else:
                 api_params["temperature"] = 0
             
             # Use correct parameter name based on model
-            if model in ["gpt-5", "gpt-5.1"]:
+            if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
                 api_params["max_completion_tokens"] = 8000
             elif model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-4.1"]:
                 api_params["max_completion_tokens"] = 4000
@@ -1167,14 +1167,14 @@ Return ONLY valid JSON:
         """
         Analyze image-only PDF using vision models.
         
-        This method converts PDF pages to images and uses GPT-5.1 with vision
+        This method converts PDF pages to images and uses GPT-5.2 with vision
         to read tables and extract investment rules, especially for German documents
         with "nein | ja | Detailrestriktionen" table format.
         
         Args:
             pdf_path: Path to PDF file
             provider: LLM provider (e.g., "openai")
-            model: Model name (will be forced to "gpt-5.1" for vision analysis)
+            model: Model name (will be forced to "gpt-5.2" for vision analysis)
             trace_id: Optional trace ID for debugging
             
         Returns:
@@ -1186,8 +1186,8 @@ Return ONLY valid JSON:
         if not PDF2IMAGE_AVAILABLE:
             raise ValueError("pdf2image not available. Install it with: pip install pdf2image")
         
-        # Force use of GPT-5.1 for vision analysis
-        vision_model = "gpt-5.1"
+        # Force use of GPT-5.2 for vision analysis
+        vision_model = "gpt-5.2"
         logger.info(f"Using {vision_model} for vision analysis (requested model: {model} was overridden)")
         
         try:
@@ -1334,7 +1334,7 @@ Return ONLY a valid JSON array with all extracted rows."""
                 # Newer models (gpt-5, gpt-5.1, o1, etc.) use max_completion_tokens
                 # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
                 # Increased limit to handle documents with many rows (up to 100+ instruments)
-                if vision_model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-5", "gpt-5.1", "gpt-4.1"]:
+                if vision_model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-4.1"]:
                     api_params["max_completion_tokens"] = 8000  # Increased from 4000 to handle more rows
                 else:
                     api_params["max_tokens"] = 8000  # Increased from 4000 to handle more rows
@@ -1458,8 +1458,8 @@ Return ONLY a valid JSON array with all extracted rows."""
             # Enhanced prompts are longer, so be more conservative for GPT-4
             if model == "gpt-4":
                 max_text_length = 10000  # Conservative limit for GPT-4's 8k context (only truncates if text > 10k)
-            elif model == "gpt-5" or model == "gpt-5.1":
-                max_text_length = 500000  # GPT-5/GPT-5.1: support very large files (500k chars)
+            elif model == "gpt-5" or model == "gpt-5.1" or model == "gpt-5.2":
+                max_text_length = 500000  # GPT-5/GPT-5.1/GPT-5.2: support very large files (500k chars)
             else:
                 max_text_length = 200000  # Increased limit for modern models
             

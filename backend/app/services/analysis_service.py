@@ -3005,7 +3005,8 @@ class AnalysisService:
         
         # Model confidence boost
         model_confidence_boost = {
-            "gpt-5.1": 30,  # Latest and most capable model (used for vision analysis)
+            "gpt-5.2": 35,  # Latest and most capable model (used for vision analysis)
+            "gpt-5.1": 30,  # Previous latest model
             "gpt-5": 25,  # Latest and most capable model
             "gpt-4o": 20,  # High quality model
             "gpt-4o-mini": 10,  # Fast, good quality model

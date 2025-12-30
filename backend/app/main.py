@@ -304,7 +304,7 @@ async def get_available_models():
     return {
         "ollama_models": svc.get_ollama_models(),
         "openai_models": svc.get_openai_models(),
-        "default_model": "gpt-5.1"
+        "default_model": "gpt-5.2"
     }
 
 @app.post("/api/upload")
