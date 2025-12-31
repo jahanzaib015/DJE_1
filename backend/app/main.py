@@ -346,7 +346,11 @@ async def analyze_document(request: AnalysisRequest, enable_tracing: bool = True
     """Start document analysis"""
     try:
         # Log the received request for debugging
-        logger.debug(f"Received analysis request: file_path={request.file_path}, method={request.analysis_method}, provider={request.llm_provider}, model={request.model}")
+        logger.debug(
+            f"Received analysis request: file_path={request.file_path}, "
+            f"method={request.analysis_method}, provider={request.llm_provider}, "
+            f"model={request.model}"
+        )
         # Generate job ID
         job_id = str(uuid.uuid4())
         
