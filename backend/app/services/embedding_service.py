@@ -32,7 +32,7 @@ class EmbeddingService:
     
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
         """
-        Initialize embedding service
+        Initialize embedding service (lazy loading - models load on first use)
         
         Args:
             model_name: Name of the sentence transformer model to use
@@ -40,10 +40,16 @@ class EmbeddingService:
         self.model_name = model_name
         self.model = None
         self.nlp = None
-        self._initialize_models()
+        self._model_loaded = False
+        self._spacy_loaded = False
+        # Models will be loaded lazily on first use
     
-    def _initialize_models(self):
-        """Initialize embedding and NLP models"""
+    def _ensure_embedding_model(self):
+        """Lazy load embedding model on first use"""
+        if self._model_loaded:
+            return
+        
+        self._model_loaded = True
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
                 logger.info(f"🔄 Loading embedding model: {self.model_name}")
@@ -54,7 +60,13 @@ class EmbeddingService:
                 self.model = None
         else:
             logger.warning("⚠️ sentence-transformers not available, embedding matching will be disabled")
+    
+    def _ensure_spacy_model(self):
+        """Lazy load spaCy model on first use"""
+        if self._spacy_loaded:
+            return
         
+        self._spacy_loaded = True
         if SPACY_AVAILABLE:
             try:
                 logger.info("🔄 Loading spaCy model...")
@@ -74,6 +86,9 @@ class EmbeddingService:
         Returns:
             Tuple of (texts, metadata_ids, embeddings)
         """
+        # Lazy load model on first use
+        self._ensure_embedding_model()
+        
         if not self.model:
             logger.warning("⚠️ Embedding model not available, returning empty index")
             return [], [], None
@@ -107,6 +122,9 @@ class EmbeddingService:
         Returns:
             List of candidate phrases
         """
+        # Lazy load spaCy model on first use (optional - has fallbacks)
+        self._ensure_spacy_model()
+        
         candidates = set()
         
         # Method 1: Use spaCy noun chunks if available
@@ -175,6 +193,9 @@ class EmbeddingService:
         Returns:
             Tuple of (best_match_id, combined_score, embedding_score, fuzzy_score)
         """
+        # Lazy load model on first use
+        self._ensure_embedding_model()
+        
         if catalog_embeddings is not None and self.model:
             # Use embedding similarity
             try:
