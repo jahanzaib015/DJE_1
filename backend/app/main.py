@@ -1,3 +1,8 @@
+import faulthandler
+faulthandler.enable()
+faulthandler.dump_traceback_later(60, repeat=True)
+print("[boot] faulthandler enabled", flush=True)
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
