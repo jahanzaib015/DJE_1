@@ -238,6 +238,60 @@ async def startup_background_tasks():
     # Start background task without awaiting (truly non-blocking)
     # This returns immediately, allowing FastAPI to continue startup
     asyncio.create_task(background_init())
+    
+    # GDPR Compliance: Schedule periodic cleanup task
+    async def periodic_cleanup():
+        """Run cleanup tasks periodically to remove old data"""
+        while True:
+            try:
+                # Run cleanup every hour (3600 seconds)
+                await asyncio.sleep(3600)
+                
+                # Cleanup old traces (older than 1 hour)
+                # Adjust max_age_hours as needed (1 hour = immediate cleanup, 24 hours = daily cleanup)
+                get_trace_handler().cleanup_old_traces(max_age_hours=1)
+                
+                # Cleanup old jobs (already has 24-hour retention, but can be adjusted)
+                cleanup_old_jobs()
+                
+                # Cleanup old markdown files (older than 1 hour)
+                try:
+                    markdown_dir = get_file_handler().markdown_dir
+                    if os.path.exists(markdown_dir):
+                        current_time = time.time()
+                        for filename in os.listdir(markdown_dir):
+                            file_path = os.path.join(markdown_dir, filename)
+                            if os.path.isfile(file_path):
+                                file_age = current_time - os.path.getctime(file_path)
+                                if file_age > 3600:  # 1 hour
+                                    os.remove(file_path)
+                                    logger.debug(f"Cleaned up old markdown file: {filename}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning markdown files: {e}")
+                
+                # Note: Excel exports are kept longer (24 hours) as they may be needed by users
+                # To enable Excel cleanup, uncomment the following block:
+                # try:
+                #     export_dir = get_file_handler().export_dir
+                #     if os.path.exists(export_dir):
+                #         current_time = time.time()
+                #         for filename in os.listdir(export_dir):
+                #             file_path = os.path.join(export_dir, filename)
+                #             if os.path.isfile(file_path):
+                #                 file_age = current_time - os.path.getctime(file_path)
+                #                 if file_age > 86400:  # 24 hours
+                #                     os.remove(file_path)
+                #                     logger.debug(f"Cleaned up old export file: {filename}")
+                # except Exception as e:
+                #     logger.warning(f"Error cleaning export files: {e}")
+                
+                logger.info("✅ Periodic cleanup completed: removed old traces, jobs, and markdown files")
+            except Exception as e:
+                logger.error(f"❌ Periodic cleanup error: {e}")
+    
+    # Start periodic cleanup task
+    asyncio.create_task(periodic_cleanup())
+    
     # Return immediately - don't await anything
     return
 
@@ -566,6 +620,35 @@ async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id
         
         save_jobs()  # Save completion
         await manager.send_message(job_id, jobs[job_id].dict())
+        
+        # GDPR Compliance: Delete uploaded PDF immediately after processing
+        try:
+            if os.path.exists(request.file_path):
+                get_file_handler().cleanup_file(request.file_path)
+                logger.info(f"✅ Deleted uploaded PDF after processing: {request.file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete PDF {request.file_path}: {e}")
+        
+        # GDPR Compliance: Delete markdown files after analysis (they contain document content)
+        try:
+            if markdown_path and os.path.exists(markdown_path):
+                get_file_handler().cleanup_file(markdown_path)
+                logger.info(f"✅ Deleted markdown file after processing: {markdown_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete markdown file {markdown_path}: {e}")
+        
+        # GDPR Compliance: Delete trace files after analysis (optional - uncomment if needed)
+        # Uncomment the following block if you want to delete traces immediately after analysis
+        # Note: Traces are useful for debugging, so keeping them with 1-hour retention is recommended
+        # if trace_id:
+        #     try:
+        #         trace_dir = get_trace_handler().get_trace_dir(trace_id)
+        #         if os.path.exists(trace_dir):
+        #             import shutil
+        #             shutil.rmtree(trace_dir)
+        #             logger.info(f"✅ Deleted trace directory after analysis: {trace_dir}")
+        #     except Exception as e:
+        #         logger.warning(f"⚠️ Failed to delete trace {trace_id}: {e}")
         
     except Exception as e:
         logger.error(f"Analysis failed for job {job_id}: {str(e)}")

@@ -35,7 +35,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSettings, showSettings }
             </div>
             
             <div className="flex items-center">
-              <h1 className="text-3xl font-bold text-white drop-shadow-lg">📄 Rules extractor for DJE sa staff</h1>
+              <h1 className="text-3xl font-bold text-white drop-shadow-lg">📄 Rules Extractor for DJE SA</h1>
               <span className="ml-3 px-3 py-1 text-sm bg-white text-yellow-600 rounded-full shadow-md font-semibold">
                 Modern
               </span>

@@ -306,6 +306,7 @@ class LLMService:
             response = await self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 temperature=0,
+                store=False,  # Prevent OpenAI from storing data for GDPR compliance
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt_text}
@@ -668,6 +669,7 @@ Before finishing, you MUST verify:
             # o1 models use max_completion_tokens instead of max_tokens
             api_params = {
                 "model": model,
+                "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                 "top_p": 1,  # Conservative mode
                 "presence_penalty": 0,  # No penalty for presence
                 "frequency_penalty": 0,  # No penalty for frequency
@@ -777,6 +779,7 @@ Before finishing, you MUST verify:
                     fallback_params = {
                         "model": "gpt-4o",
                         "temperature": 0,
+                        "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": extraction_system_prompt}
@@ -805,6 +808,7 @@ Before finishing, you MUST verify:
                     fallback_params = {
                         "model": "gpt-4o-mini",
                         "temperature": 0,
+                        "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": extraction_system_prompt}
@@ -936,6 +940,7 @@ Return ONLY valid JSON:
         try:
             api_params = {
                 "model": model,
+                "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                 "top_p": 1,
                 "presence_penalty": 0,
                 "frequency_penalty": 0,
@@ -1299,6 +1304,7 @@ Before finishing, verify:
                 # Use standard chat.completions API for vision analysis
                 api_params = {
                     "model": vision_model,
+                    "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                     "messages": [
                         {
                             "role": "system",
