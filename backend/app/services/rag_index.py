@@ -176,7 +176,8 @@ def embed(texts: List[str]) -> List[List[float]]:
 
 def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/chroma", doc_id: str = None, pdf_path: str = None) -> Dict[str, Any]:
     """
-    Index PDF chunks into ChromaDB for RAG retrieval
+    Index PDF chunks into ChromaDB for RAG retrieval.
+    Streams chunks from JSONL file in batches to avoid loading all chunks into memory.
     
     Args:
         clean_text_path: Path to cleaned text file (20_clean_text.txt)
@@ -189,98 +190,19 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
         Dictionary with indexing results
     """
     try:
-        # Read clean text
-        clean_text = Path(clean_text_path).read_text(encoding="utf-8")
-        
-        # Use new chunking approach if PDF path is provided
-        if pdf_path and os.path.exists(pdf_path):
-            chunks = build_chunks(pdf_path, clean_text)
-        else:
-            # Fallback to reading chunks from JSONL
-            chunks = []
-            if os.path.exists(chunks_path):
-                with open(chunks_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            chunks.append(json.loads(line))
-            else:
-                # If no chunks file exists, use text-only chunking
-                chunks = chunk_text(clean_text)
-        
-        # Prepare documents to upsert
-        documents, metadatas, ids = [], [], []
-        
-        for i, ch in enumerate(chunks):
-            # Handle both dict and string chunk formats
-            if isinstance(ch, dict):
-                text = ch.get("text", "")
-                chunk_type = ch.get("type", "text")
-                
-                meta = {
-                    "doc_id": doc_id,
-                    "chunk_idx": i,
-                    "chunk_type": chunk_type,
-                    "type": chunk_type,  # For filtering compatibility
-                    "source": pdf_path or "unknown",  # PDF source path
-                    "page": ch.get("page"),
-                    "span_start": ch.get("span", [None, None])[0],
-                    "span_end": ch.get("span", [None, None])[1],
-                    "chunk_id": ch.get("chunk_id"),
-                    "start_char": ch.get("start_char"),
-                    "end_char": ch.get("end_char"),
-                    "length": ch.get("length"),
-                    "prev_chunk": ch.get("prev_chunk"),
-                    "next_chunk": ch.get("next_chunk"),
-                    **detect_flags(text)
-                }
-                
-                # Add table-specific metadata
-                if chunk_type == "table":
-                    meta.update({
-                        "table_id": ch.get("table_id"),
-                        "table_shape": ch.get("shape"),
-                        "table_accuracy": ch.get("accuracy"),
-                        "table_page": ch.get("page")
-                    })
-            else:
-                # Fallback for string chunks
-                text = str(ch)
-                meta = {
-                    "doc_id": doc_id,
-                    "chunk_idx": i,
-                    "chunk_type": "text",
-                    "type": "text",  # For filtering compatibility
-                    "source": pdf_path or "unknown",  # PDF source path
-                    "span_start": None,
-                    "span_end": None,
-                    "page": None,
-                    "chunk_id": i,
-                    "start_char": None,
-                    "end_char": None,
-                    "length": len(text),
-                    "prev_chunk": i - 1 if i > 0 else None,
-                    "next_chunk": i + 1 if i < len(chunks) - 1 else None,
-                    **detect_flags(text)
-                }
-            
-            documents.append(text)
-            metadatas.append(meta)
-            ids.append(str(uuid.uuid4()))
-        
         # Check if ChromaDB is available
         if not CHROMADB_AVAILABLE:
-            # Mock mode - just save the processed data
-            os.makedirs(vectordb_dir, exist_ok=True)
+            # Mock mode - just count chunks without indexing
+            total_count = 0
+            if os.path.exists(chunks_path):
+                with open(chunks_path, 'r', encoding='utf-8') as f:
+                    total_count = sum(1 for line in f if line.strip())
             
-            # Save processed chunks as JSON for later retrieval
+            os.makedirs(vectordb_dir, exist_ok=True)
             mock_index_path = os.path.join(vectordb_dir, f"{doc_id}_index.json")
             mock_data = {
                 "doc_id": doc_id,
-                "chunks": chunks,
-                "documents": documents,
-                "metadatas": metadatas,
-                "ids": ids,
+                "count": total_count,
                 "created_at": str(Path().cwd()),
                 "mode": "mock"
             }
@@ -290,8 +212,8 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             
             return {
                 "success": True,
-                "count": len(documents),
-                "indexed": len(documents),
+                "count": total_count,
+                "indexed": total_count,
                 "collection": "policy_rules",
                 "doc_id": doc_id,
                 "vectordb_dir": vectordb_dir,
@@ -313,31 +235,95 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             )
         )
         
-        # Compute embeddings in batches to control rate
-        BATCH_SIZE = 64
+        # Stream chunks from JSONL and process in batches
+        BATCH_SIZE = 16  # smaller = less RAM
+        batch_docs, batch_meta, batch_ids = [], [], []
         total_indexed = 0
+        chunk_idx = 0
         
-        for s in range(0, len(documents), BATCH_SIZE):
-            batch_docs = documents[s:s+BATCH_SIZE]
-            batch_ids = ids[s:s+BATCH_SIZE]
-            batch_meta = metadatas[s:s+BATCH_SIZE]
+        # Check if chunks_path exists, otherwise fallback to building chunks
+        if not os.path.exists(chunks_path):
+            # Fallback: build chunks from clean text
+            clean_text = Path(clean_text_path).read_text(encoding="utf-8")
+            if pdf_path and os.path.exists(pdf_path):
+                chunks = build_chunks(pdf_path, clean_text)
+            else:
+                chunks = chunk_text(clean_text)
             
-            # Generate embeddings
+            # Process fallback chunks in batches
+            for ch in chunks:
+                if isinstance(ch, dict):
+                    text = ch.get("text", "")
+                    chunk_type = ch.get("type", "text")
+                else:
+                    text = str(ch)
+                    chunk_type = "text"
+                
+                meta = _build_chunk_metadata(ch, chunk_idx, doc_id, pdf_path, chunk_type)
+                
+                batch_docs.append(text)
+                batch_meta.append(meta)
+                batch_ids.append(str(uuid.uuid4()))
+                chunk_idx += 1
+                
+                if len(batch_docs) >= BATCH_SIZE:
+                    vecs = embed(batch_docs)
+                    coll.upsert(
+                        ids=batch_ids,
+                        documents=batch_docs,
+                        metadatas=batch_meta,
+                        embeddings=vecs
+                    )
+                    total_indexed += len(batch_docs)
+                    batch_docs.clear()
+                    batch_meta.clear()
+                    batch_ids.clear()
+        else:
+            # Stream from JSONL file
+            with open(chunks_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    ch = json.loads(line)
+                    text = ch.get("text", "")
+                    chunk_type = ch.get("type", "text")
+                    
+                    meta = _build_chunk_metadata(ch, chunk_idx, doc_id, pdf_path, chunk_type)
+                    
+                    batch_docs.append(text)
+                    batch_meta.append(meta)
+                    batch_ids.append(str(uuid.uuid4()))
+                    chunk_idx += 1
+                    
+                    if len(batch_docs) >= BATCH_SIZE:
+                        vecs = embed(batch_docs)
+                        coll.upsert(
+                            ids=batch_ids,
+                            documents=batch_docs,
+                            metadatas=batch_meta,
+                            embeddings=vecs
+                        )
+                        total_indexed += len(batch_docs)
+                        batch_docs.clear()
+                        batch_meta.clear()
+                        batch_ids.clear()
+        
+        # Flush remaining items in batch
+        if batch_docs:
             vecs = embed(batch_docs)
-            
-            # Upsert with precomputed embeddings
             coll.upsert(
                 ids=batch_ids,
                 documents=batch_docs,
                 metadatas=batch_meta,
                 embeddings=vecs
             )
-            
             total_indexed += len(batch_docs)
         
         return {
             "success": True,
-            "count": len(documents),
+            "count": chunk_idx,
             "indexed": total_indexed,
             "collection": "policy_rules",
             "doc_id": doc_id,
@@ -346,6 +332,7 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
         }
         
     except Exception as e:
+        logger.error(f"Failed to index PDF: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e),
@@ -354,6 +341,58 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             "collection": "policy_rules",
             "doc_id": doc_id
         }
+
+def _build_chunk_metadata(ch: Dict[str, Any], chunk_idx: int, doc_id: str, pdf_path: Optional[str], chunk_type: str) -> Dict[str, Any]:
+    """Build metadata dictionary for a chunk"""
+    if isinstance(ch, dict):
+        meta = {
+            "doc_id": doc_id,
+            "chunk_idx": chunk_idx,
+            "chunk_type": chunk_type,
+            "type": chunk_type,  # For filtering compatibility
+            "source": pdf_path or "unknown",
+            "page": ch.get("page"),
+            "span_start": ch.get("span", [None, None])[0],
+            "span_end": ch.get("span", [None, None])[1],
+            "chunk_id": ch.get("chunk_id"),
+            "start_char": ch.get("start_char"),
+            "end_char": ch.get("end_char"),
+            "length": ch.get("length"),
+            "prev_chunk": ch.get("prev_chunk"),
+            "next_chunk": ch.get("next_chunk"),
+            **detect_flags(ch.get("text", ""))
+        }
+        
+        # Add table-specific metadata
+        if chunk_type == "table":
+            meta.update({
+                "table_id": ch.get("table_id"),
+                "table_shape": ch.get("shape"),
+                "table_accuracy": ch.get("accuracy"),
+                "table_page": ch.get("page")
+            })
+    else:
+        # Fallback for string chunks
+        text = str(ch)
+        meta = {
+            "doc_id": doc_id,
+            "chunk_idx": chunk_idx,
+            "chunk_type": "text",
+            "type": "text",
+            "source": pdf_path or "unknown",
+            "span_start": None,
+            "span_end": None,
+            "page": None,
+            "chunk_id": chunk_idx,
+            "start_char": None,
+            "end_char": None,
+            "length": len(text),
+            "prev_chunk": chunk_idx - 1 if chunk_idx > 0 else None,
+            "next_chunk": chunk_idx + 1,
+            **detect_flags(text)
+        }
+    
+    return meta
 
 def query_rag(vectordb_dir: str = "/tmp/chroma", query: str = "", n_results: int = 5, doc_id: Optional[str] = None) -> Dict[str, Any]:
     """

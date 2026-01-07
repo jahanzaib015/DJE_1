@@ -17,6 +17,7 @@ import time
 from typing import Dict, Any, List
 import uuid
 from datetime import datetime
+import aiofiles
 
 from .models.catalog_models import (
     ClassificationRequest,
@@ -35,6 +36,10 @@ from .models.analysis_models import AnalysisMethod, LLMProvider
 logger = setup_logger(__name__)
 
 print("[boot] app.main imported", flush=True)
+
+# Global semaphore to prevent multiple analyses from running concurrently
+# This prevents OOM issues when users click multiple times or multiple jobs are queued
+ANALYSIS_SEM = asyncio.Semaphore(1)
 
 # Ensure PORT is available for Render
 import os
@@ -473,121 +478,160 @@ async def run_analysis(job_id: str, request: AnalysisRequest, trace_id: str = No
 
 async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id: str = None):
     """Internal analysis function with progress updates"""
-    try:
-        logger.info(f"Starting analysis job {job_id} | Method: {get_enum_value(request.analysis_method)} | Provider: {get_enum_value(request.llm_provider)}")
-        
-        # Check if job still exists
-        if job_id not in jobs:
-            logger.warning(f"Job {job_id} not found in jobs dictionary")
-            return
+    # Use semaphore to prevent multiple analyses from running concurrently
+    async with ANALYSIS_SEM:
+        try:
+            logger.info(f"Starting analysis job {job_id} | Method: {get_enum_value(request.analysis_method)} | Provider: {get_enum_value(request.llm_provider)}")
             
-        # Update status
-        jobs[job_id].status = "processing"
-        jobs[job_id].progress = 10
-        jobs[job_id].message = "Extracting text from PDF"
-        save_jobs()  # Save status update
-        await manager.send_message(job_id, jobs[job_id].dict())
-        
-        # Extract text with or without tracing
-        if trace_id:
-            # Create trace directory
-            await get_trace_handler().create_trace_directory(trace_id)
-            
-            # Save metadata
-            meta_data = {
-                "trace_id": trace_id,
-                "job_id": job_id,
-                "filename": os.path.basename(request.file_path),
-                "file_path": request.file_path,
-                "analysis_method": get_enum_value(request.analysis_method),
-                "llm_provider": get_enum_value(request.llm_provider),
-                "model": request.model,
-                "fund_id": request.fund_id,
-                "ocr_enabled": False,  # Currently not using OCR
-                "extractor": "PyPDF2",
-                "start_time": time.time(),
-                "created_at": datetime.now().isoformat()
-            }
-            await get_trace_handler().save_meta(trace_id, meta_data)
-            
-            # Extract text with tracing
-            extraction_result = await get_file_handler().extract_pdf_text_with_tracing(request.file_path, trace_id)
-            text = extraction_result["clean_text"]
-            is_image_only = extraction_result.get("is_image_only", False)
-            
-            # Update metadata with extraction info
-            meta_data.update({
-                "total_pages": extraction_result["total_pages"],
-                "extraction_time": extraction_result["extraction_time"],
-                "text_length": len(text),
-                "chunks_count": len(extraction_result.get("chunks", [])),
-                "is_image_only": is_image_only
-            })
-            await get_trace_handler().save_meta(trace_id, meta_data)
-            
-        else:
-            # Regular text extraction
-            text = await get_file_handler().extract_pdf_text(request.file_path)
-            # Check if image-only for non-traced extraction too
-            is_image_only = get_file_handler().is_image_only_pdf(request.file_path)
-        
-        jobs[job_id].progress = 30
-        if is_image_only:
-            jobs[job_id].message = "Image-only PDF detected, using vision analysis"
-        else:
-            jobs[job_id].message = "Text extracted, converting to markdown"
-        save_jobs()  # Save progress update
-        await manager.send_message(job_id, jobs[job_id].dict())
-        
-        # Convert text to markdown and save it
-        markdown_path = None
-        markdown_text = None
-        if not is_image_only:
-            try:
-                # Generate filename from original PDF or job_id
-                original_filename = os.path.basename(request.file_path)
-                filename_base = os.path.splitext(original_filename)[0] if original_filename else f"document_{job_id}"
+            # Check if job still exists
+            if job_id not in jobs:
+                logger.warning(f"Job {job_id} not found in jobs dictionary")
+                return
                 
-                # Save text as markdown
-                markdown_path = await get_file_handler().save_text_as_markdown(
-                    text=text,
-                    job_id=job_id,
-                    filename=filename_base
+            # Update status
+            jobs[job_id].status = "processing"
+            jobs[job_id].progress = 10
+            jobs[job_id].message = "Extracting text from PDF"
+            save_jobs()  # Save status update
+            await manager.send_message(job_id, jobs[job_id].dict())
+            
+            # Extract text with or without tracing
+            if trace_id:
+                # Create trace directory
+                await get_trace_handler().create_trace_directory(trace_id)
+                
+                # Save metadata
+                meta_data = {
+                    "trace_id": trace_id,
+                    "job_id": job_id,
+                    "filename": os.path.basename(request.file_path),
+                    "file_path": request.file_path,
+                    "analysis_method": get_enum_value(request.analysis_method),
+                    "llm_provider": get_enum_value(request.llm_provider),
+                    "model": request.model,
+                    "fund_id": request.fund_id,
+                    "ocr_enabled": False,  # Currently not using OCR
+                    "extractor": "PyPDF2",
+                    "start_time": time.time(),
+                    "created_at": datetime.now().isoformat()
+                }
+                await get_trace_handler().save_meta(trace_id, meta_data)
+                
+                # Extract text with tracing (returns paths, not large strings)
+                extraction_result = await get_file_handler().extract_pdf_text_with_tracing(request.file_path, trace_id)
+                clean_text_path = extraction_result["clean_text_path"]
+                chunks_path = extraction_result["chunks_path"]
+                is_image_only = extraction_result.get("is_image_only", False)
+                
+                # Get text length from file (don't load full text into memory)
+                text_length = 0
+                if os.path.exists(clean_text_path):
+                    text_length = os.path.getsize(clean_text_path)
+                
+                # Get chunks count from file (don't load chunks into memory)
+                chunks_count = 0
+                if os.path.exists(chunks_path):
+                    with open(chunks_path, 'r', encoding='utf-8') as f:
+                        chunks_count = sum(1 for line in f if line.strip())
+                
+                # Update metadata with extraction info
+                meta_data.update({
+                    "total_pages": extraction_result["total_pages"],
+                    "extraction_time": extraction_result["extraction_time"],
+                    "text_length": text_length,
+                    "chunks_count": chunks_count,
+                    "is_image_only": is_image_only,
+                    "clean_text_path": clean_text_path,
+                    "chunks_path": chunks_path
+                })
+                await get_trace_handler().save_meta(trace_id, meta_data)
+                
+            else:
+                # Regular text extraction (non-traced)
+                # For non-traced extraction, we still need to load text for analysis
+                # but we'll do it later when needed to avoid keeping it in memory
+                is_image_only = get_file_handler().is_image_only_pdf(request.file_path)
+                clean_text_path = None
+                chunks_path = None
+            
+            jobs[job_id].progress = 30
+            if is_image_only:
+                jobs[job_id].message = "Image-only PDF detected, using vision analysis"
+            else:
+                jobs[job_id].message = "Text extracted, converting to markdown"
+            save_jobs()  # Save progress update
+            await manager.send_message(job_id, jobs[job_id].dict())
+            
+            # Convert text to markdown and save it
+            markdown_path = None
+            if not is_image_only:
+                try:
+                    # Load text from disk only when needed (for markdown conversion)
+                    if trace_id and clean_text_path and os.path.exists(clean_text_path):
+                        # Load clean text from trace directory
+                        async with aiofiles.open(clean_text_path, 'r', encoding='utf-8') as f:
+                            text = await f.read()
+                    elif not trace_id:
+                        # Non-traced extraction: load text normally (only when needed)
+                        text = await get_file_handler().extract_pdf_text(request.file_path)
+                    else:
+                        raise FileNotFoundError(f"Clean text file not found: {clean_text_path}")
+                    
+                    # Generate filename from original PDF or job_id
+                    original_filename = os.path.basename(request.file_path)
+                    filename_base = os.path.splitext(original_filename)[0] if original_filename else f"document_{job_id}"
+                    
+                    # Save text as markdown
+                    markdown_path = await get_file_handler().save_text_as_markdown(
+                        text=text,
+                        job_id=job_id,
+                        filename=filename_base
+                    )
+                    
+                    # Clear text from memory after saving
+                    del text
+                    
+                    jobs[job_id].progress = 40
+                    jobs[job_id].message = "Markdown file created, starting analysis"
+                    save_jobs()
+                    await manager.send_message(job_id, jobs[job_id].dict())
+                    
+                    logger.info(f"✅ Markdown conversion complete: {markdown_path}")
+                except Exception as e:
+                    logger.error(f"❌ Markdown conversion failed: {e}", exc_info=True)
+                    logger.warning("⚠️ Will load text from disk for analysis")
+            
+            # Run analysis - use vision pipeline for image-only PDFs
+            svc = get_analysis_service()
+            if is_image_only:
+                logger.info(f"📸 Using vision pipeline for image-only PDF: {request.file_path}")
+                result = await svc.analyze_document_vision(
+                    pdf_path=request.file_path,
+                    analysis_method=request.analysis_method,
+                    llm_provider=request.llm_provider,
+                    model=request.model,
+                    fund_id=request.fund_id,
+                    trace_id=trace_id
                 )
+            else:
+                # Load text from disk only when needed for analysis
+                # Prefer markdown if available, otherwise load from clean_text_path
+                if markdown_path and os.path.exists(markdown_path):
+                    logger.info(f"📄 Loading markdown text from {markdown_path} for analysis")
+                    async with aiofiles.open(markdown_path, 'r', encoding='utf-8') as f:
+                        text_for_analysis = await f.read()
+                    logger.info("📄 Using markdown text for analysis")
+                elif trace_id and clean_text_path and os.path.exists(clean_text_path):
+                    logger.info(f"📄 Loading clean text from {clean_text_path} for analysis")
+                    async with aiofiles.open(clean_text_path, 'r', encoding='utf-8') as f:
+                        text_for_analysis = await f.read()
+                    logger.info("📄 Using clean text for analysis")
+                else:
+                    # Fallback: load text normally (non-traced extraction)
+                    logger.info("📄 Loading text via extract_pdf_text (non-traced)")
+                    text_for_analysis = await get_file_handler().extract_pdf_text(request.file_path)
                 
-                # Read the markdown file
-                markdown_text = await get_file_handler().read_markdown_file(markdown_path)
-                
-                jobs[job_id].progress = 40
-                jobs[job_id].message = "Markdown file created, starting analysis"
-                save_jobs()
-                await manager.send_message(job_id, jobs[job_id].dict())
-                
-                logger.info(f"✅ Markdown conversion complete: {markdown_path}")
-            except Exception as e:
-                logger.error(f"❌ Markdown conversion failed: {e}", exc_info=True)
-                # Fallback to original text if markdown conversion fails
-                markdown_text = text
-                logger.warning("⚠️ Falling back to original text for analysis")
-        
-        # Run analysis - use vision pipeline for image-only PDFs
-        svc = get_analysis_service()
-        if is_image_only:
-            logger.info(f"📸 Using vision pipeline for image-only PDF: {request.file_path}")
-            result = await svc.analyze_document_vision(
-                pdf_path=request.file_path,
-                analysis_method=request.analysis_method,
-                llm_provider=request.llm_provider,
-                model=request.model,
-                fund_id=request.fund_id,
-                trace_id=trace_id
-            )
-        else:
-            # Use markdown text if available, otherwise fallback to original text
-            text_for_analysis = markdown_text if markdown_text else text
-            logger.info(f"📄 Using {'markdown' if markdown_text else 'original text'} for analysis")
-            
-            result = await svc.analyze_document(
+                result = await svc.analyze_document(
                 text=text_for_analysis,
                 analysis_method=request.analysis_method,
                 llm_provider=request.llm_provider,
@@ -595,75 +639,78 @@ async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id
                 fund_id=request.fund_id,
                 trace_id=trace_id
             )
-        
-        jobs[job_id].progress = 90
-        jobs[job_id].message = "Analysis complete, finalizing results"
-        await manager.send_message(job_id, jobs[job_id].dict())
-        
-        # Complete job
-        jobs[job_id].status = "completed"
-        jobs[job_id].progress = 100
-        jobs[job_id].message = "Analysis completed successfully"
-        jobs[job_id].result = result
-        
-        # Log result summary for debugging
-        allowed_count = result.get("allowed_instruments", 0)
-        total_count = result.get("total_instruments", 0)
-        notes_count = len(result.get("notes", []))
-        logger.info(f"Analysis complete [{job_id}]: {allowed_count}/{total_count} allowed instruments, {notes_count} notes")
-        if notes_count > 0:
-            logger.debug(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
-        
-        # Add trace_id to result if available
-        if trace_id:
-            jobs[job_id].result["trace_id"] = trace_id
-        
-        save_jobs()  # Save completion
-        await manager.send_message(job_id, jobs[job_id].dict())
-        
-        # GDPR Compliance: Delete uploaded PDF immediately after processing
-        try:
-            if os.path.exists(request.file_path):
-                get_file_handler().cleanup_file(request.file_path)
-                logger.info(f"✅ Deleted uploaded PDF after processing: {request.file_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to delete PDF {request.file_path}: {e}")
-        
-        # GDPR Compliance: Delete markdown files after analysis (they contain document content)
-        try:
-            if markdown_path and os.path.exists(markdown_path):
-                get_file_handler().cleanup_file(markdown_path)
-                logger.info(f"✅ Deleted markdown file after processing: {markdown_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to delete markdown file {markdown_path}: {e}")
-        
-        # GDPR Compliance: Delete trace files after analysis (optional - uncomment if needed)
-        # Uncomment the following block if you want to delete traces immediately after analysis
-        # Note: Traces are useful for debugging, so keeping them with 1-hour retention is recommended
-        # if trace_id:
-        #     try:
-        #         trace_dir = get_trace_handler().get_trace_dir(trace_id)
-        #         if os.path.exists(trace_dir):
-        #             import shutil
-        #             shutil.rmtree(trace_dir)
-        #             logger.info(f"✅ Deleted trace directory after analysis: {trace_dir}")
-        #     except Exception as e:
-        #         logger.warning(f"⚠️ Failed to delete trace {trace_id}: {e}")
-        
-    except Exception as e:
-        logger.error(f"Analysis failed for job {job_id}: {str(e)}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        
-        # Only update job status if job still exists
-        if job_id in jobs:
-            jobs[job_id].status = "failed"
-            jobs[job_id].error = str(e)
-            jobs[job_id].message = f"Analysis failed: {str(e)}"
-            save_jobs()  # Save error status
+            
+            # Clear text from memory after analysis
+            del text_for_analysis
+            
+            jobs[job_id].progress = 90
+            jobs[job_id].message = "Analysis complete, finalizing results"
             await manager.send_message(job_id, jobs[job_id].dict())
-            logger.debug(f"Updated job {job_id} status to failed")
-        else:
-            logger.warning(f"Job {job_id} not found when trying to update error status")
+            
+            # Complete job
+            jobs[job_id].status = "completed"
+            jobs[job_id].progress = 100
+            jobs[job_id].message = "Analysis completed successfully"
+            jobs[job_id].result = result
+            
+            # Log result summary for debugging
+            allowed_count = result.get("allowed_instruments", 0)
+            total_count = result.get("total_instruments", 0)
+            notes_count = len(result.get("notes", []))
+            logger.info(f"Analysis complete [{job_id}]: {allowed_count}/{total_count} allowed instruments, {notes_count} notes")
+            if notes_count > 0:
+                logger.debug(f"[JOB {job_id}] First 3 notes: {result.get('notes', [])[:3]}")
+            
+            # Add trace_id to result if available
+            if trace_id:
+                jobs[job_id].result["trace_id"] = trace_id
+            
+            save_jobs()  # Save completion
+            await manager.send_message(job_id, jobs[job_id].dict())
+            
+            # GDPR Compliance: Delete uploaded PDF immediately after processing
+            try:
+                if os.path.exists(request.file_path):
+                    get_file_handler().cleanup_file(request.file_path)
+                    logger.info(f"✅ Deleted uploaded PDF after processing: {request.file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to delete PDF {request.file_path}: {e}")
+            
+            # GDPR Compliance: Delete markdown files after analysis (they contain document content)
+            try:
+                if markdown_path and os.path.exists(markdown_path):
+                    get_file_handler().cleanup_file(markdown_path)
+                    logger.info(f"✅ Deleted markdown file after processing: {markdown_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to delete markdown file {markdown_path}: {e}")
+            
+            # GDPR Compliance: Delete trace files after analysis (optional - uncomment if needed)
+            # Uncomment the following block if you want to delete traces immediately after analysis
+            # Note: Traces are useful for debugging, so keeping them with 1-hour retention is recommended
+            # if trace_id:
+            #     try:
+            #         trace_dir = get_trace_handler().get_trace_dir(trace_id)
+            #         if os.path.exists(trace_dir):
+            #             import shutil
+            #             shutil.rmtree(trace_dir)
+            #             logger.info(f"✅ Deleted trace directory after analysis: {trace_dir}")
+            #     except Exception as e:
+            #         logger.warning(f"⚠️ Failed to delete trace {trace_id}: {e}")
+                
+        except Exception as e:
+            logger.error(f"Analysis failed for job {job_id}: {str(e)}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            
+            # Only update job status if job still exists
+            if job_id in jobs:
+                jobs[job_id].status = "failed"
+                jobs[job_id].error = str(e)
+                jobs[job_id].message = f"Analysis failed: {str(e)}"
+                save_jobs()  # Save error status
+                await manager.send_message(job_id, jobs[job_id].dict())
+                logger.debug(f"Updated job {job_id} status to failed")
+            else:
+                logger.warning(f"Job {job_id} not found when trying to update error status")
 
 @app.get("/api/jobs")
 async def list_jobs():

@@ -6,6 +6,7 @@ import subprocess
 import json
 import re
 import unicodedata
+import gc
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from uuid import uuid4
@@ -325,17 +326,16 @@ class FileHandler:
                 # Save tables separately
                 await self.trace_handler.save_tables(trace_id, tables)
             
-            # Create chunks with improved LangChain-based chunking
-            chunks = self.chunk_text(clean_text)
-            await self.trace_handler.save_chunks(trace_id, chunks)
+            # Capture values needed for metadata before freeing memory
+            total_pages = len(page_texts)
+            clean_text_length = len(clean_text)
             
-            # Save chunks in JSONL format for verification
-            await self.save_chunks_jsonl(chunks, trace_id)
+            # Stream chunks to JSONL without building a huge list in memory
+            chunks_path, chunks_count = await self.save_chunks_jsonl_streaming(clean_text, trace_id)
             
-            # Index chunks for RAG retrieval
+            # Index chunks for RAG retrieval (chunks_path already set from streaming)
             trace_dir = self.trace_handler.get_trace_dir(trace_id)
             clean_text_path = os.path.join(trace_dir, "20_clean_text.txt")
-            chunks_path = os.path.join(trace_dir, "30_chunks.jsonl")
             vectordb_dir = "var/chroma"
             
             # Perform RAG indexing
@@ -349,10 +349,18 @@ class FileHandler:
             # Save RAG indexing results
             await self.trace_handler.save_rag_index(trace_id, rag_results)
             
+            # Free memory explicitly after saving trace artifacts
+            # Delete large objects to free memory immediately
+            del page_texts
+            del tables
+            del clean_text
+            # Force garbage collection to free memory immediately
+            gc.collect()
+            
             # Update final metadata with is_image_only status
             meta.update({
-                "clean_text_length": len(clean_text),
-                "chunks_count": len(chunks),
+                "clean_text_length": clean_text_length,
+                "chunks_count": chunks_count,
                 "extraction_time": time.time() - start_time,
                 "rag_indexed": rag_results.get("success", False),
                 "rag_chunks_indexed": rag_results.get("indexed", 0),
@@ -364,12 +372,17 @@ class FileHandler:
             
             extraction_time = time.time() - start_time
             
+            # Get paths to saved files (already saved to disk above)
+            trace_dir_str = self.trace_handler.get_trace_dir(trace_id)
+            clean_text_path = os.path.join(trace_dir_str, "20_clean_text.txt")
+            chunks_path = os.path.join(trace_dir_str, "30_chunks.jsonl")
+            
+            # IMPORTANT: do NOT include raw_text/page_texts/clean_text/chunks in return
+            # These are already saved to disk and can be loaded when needed
             return {
-                "raw_text": "\n".join(page_texts),
-                "clean_text": clean_text,
-                "page_texts": page_texts,
-                "chunks": chunks,
-                "total_pages": len(page_texts),
+                "clean_text_path": clean_text_path,
+                "chunks_path": chunks_path,
+                "total_pages": total_pages,
                 "extraction_time": extraction_time,
                 "extraction_methods": extraction_methods,
                 "ocr_used": meta["ocr_used"],
@@ -948,6 +961,58 @@ class FileHandler:
         except Exception as e:
             logger.error(f"Failed to save chunks JSONL: {e}", exc_info=True)
             return None
+    
+    async def save_chunks_jsonl_streaming(self, text: str, trace_id: str) -> tuple[str, int]:
+        """
+        Stream chunks to JSONL as they're generated, avoiding building a huge list in memory.
+        Returns: (jsonl_path, chunks_count)
+        """
+        try:
+            trace_dir = self.trace_handler.get_trace_dir(trace_id)
+            out_path = os.path.join(trace_dir, "30_chunks.jsonl")
+            
+            if not LANGCHAIN_AVAILABLE:
+                # Fallback: need to build chunks list for non-LangChain case
+                chunks = self._create_chunks(text, max_tokens=1000, overlap_tokens=150)
+                async with aiofiles.open(out_path, "w", encoding="utf-8") as f:
+                    for chunk in chunks:
+                        await f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+                return out_path, len(chunks)
+            
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=150,
+                separators=["\n\n", "\n", ". ", ";", " "]
+            )
+            # Split text into chunks (this still creates a list, but it's just strings, not full dicts)
+            chunk_texts = splitter.split_text(text)
+            
+            chunks_count = 0
+            async with aiofiles.open(out_path, "w", encoding="utf-8") as f:
+                char_position = 0
+                for i, chunk_text in enumerate(chunk_texts):
+                    chunk_length = len(chunk_text)
+                    obj = {
+                        "chunk_id": i + 1,
+                        "start_char": char_position,
+                        "end_char": char_position + chunk_length,
+                        "text": chunk_text,
+                        "length": chunk_length,
+                        "token_estimate": chunk_length // 4,
+                        "prev_chunk": i if i > 0 else None,
+                        "next_chunk": i + 2 if i < len(chunk_texts) - 1 else None,
+                        "has_negations": bool(self.NEG_CUES.search(chunk_text)),
+                        "type": "text"
+                    }
+                    await f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                    char_position += chunk_length
+                    chunks_count += 1
+            
+            return out_path, chunks_count
+            
+        except Exception as e:
+            logger.error(f"Failed to save chunks JSONL (streaming): {e}", exc_info=True)
+            return None, 0
     
     async def create_excel_export(self, data: dict) -> str:
         """Create Excel export from analysis results"""
