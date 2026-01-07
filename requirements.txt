@@ -20,3 +20,6 @@ pytesseract==0.3.10
 # Table extraction (optional)
 camelot-py==0.10.1
 opencv-python==4.12.0.88
+gunicorn==21.2.0
+
+
