@@ -288,12 +288,17 @@ class FileHandler:
             # Clean and normalize text
             clean_text = self._clean_text_robust(page_texts)
             
+            # FREE MEMORY: Delete page_texts immediately after creating clean_text
+            # We've already saved raw pages to disk, so we don't need page_texts anymore
+            del page_texts
+            import gc
+            gc.collect()  # Force immediate garbage collection
+            
             # Warn if clean text is empty or very short
             if len(clean_text) == 0:
                 logger.error(f"⚠️ CRITICAL: Clean text is empty after processing! Raw text had {total_chars} characters.")
-                # If clean text is empty but we have pages, mark as image-only
-                if len(page_texts) > 0:
-                    is_image_only = True
+                # If clean text is empty, mark as image-only
+                is_image_only = True
             elif len(clean_text) < 100:
                 logger.warning(f"⚠️ WARNING: Clean text is very short ({len(clean_text)} chars). PDF might be image-based or have extraction issues.")
             
@@ -314,10 +319,18 @@ class FileHandler:
                 if ocr_texts and sum(len(t) for t in ocr_texts) > len(clean_text) * 0.5:  # OCR gives at least 50% more text
                     ocr_clean_text = self._clean_text_robust(ocr_texts)
                     logger.info(f"✅ OCR extraction successful: {len(ocr_clean_text)} chars (vs {len(clean_text)} from regular extraction)")
+                    # FREE MEMORY: Delete old clean_text and ocr_texts immediately
+                    del clean_text
+                    del ocr_texts
                     clean_text = ocr_clean_text
+                    del ocr_clean_text  # Free the temporary variable
+                    gc.collect()  # Force garbage collection
                     meta["ocr_used"] = True
-                    extraction_methods.append({"method": "ocr_preferred", "char_count": len(ocr_clean_text), "success": True, "reason": "tables/images detected"})
+                    extraction_methods.append({"method": "ocr_preferred", "char_count": len(clean_text), "success": True, "reason": "tables/images detected"})
                 else:
+                    # FREE MEMORY: Delete ocr_texts if we're not using it
+                    del ocr_texts
+                    gc.collect()
                     logger.info(f"⚠️ OCR extraction didn't improve text quality, using regular extraction")
             
             if tables:
@@ -327,18 +340,24 @@ class FileHandler:
                 await self.trace_handler.save_tables(trace_id, tables)
             
             # Capture values needed for metadata before freeing memory
-            total_pages = len(page_texts)
+            # Get total_pages from meta (already set earlier)
+            total_pages = meta.get("total_pages", 0)
             clean_text_length = len(clean_text)
             
             # Stream chunks to JSONL without building a huge list in memory
             chunks_path, chunks_count = await self.save_chunks_jsonl_streaming(clean_text, trace_id)
+            
+            # FREE MEMORY: Delete clean_text immediately after chunking (it's saved to disk)
+            # We'll reload it from disk for RAG indexing if needed
+            del clean_text
+            gc.collect()  # Force immediate garbage collection
             
             # Index chunks for RAG retrieval (chunks_path already set from streaming)
             trace_dir = self.trace_handler.get_trace_dir(trace_id)
             clean_text_path = os.path.join(trace_dir, "20_clean_text.txt")
             vectordb_dir = "var/chroma"
             
-            # Perform RAG indexing
+            # Perform RAG indexing (reads from disk, doesn't keep everything in memory)
             rag_results = index_pdf(
                 clean_text_path=clean_text_path,
                 chunks_path=chunks_path,
@@ -349,13 +368,9 @@ class FileHandler:
             # Save RAG indexing results
             await self.trace_handler.save_rag_index(trace_id, rag_results)
             
-            # Free memory explicitly after saving trace artifacts
-            # Delete large objects to free memory immediately
-            del page_texts
+            # FREE MEMORY: Delete tables (already saved to disk)
             del tables
-            del clean_text
-            # Force garbage collection to free memory immediately
-            gc.collect()
+            gc.collect()  # Force garbage collection after RAG indexing
             
             # Update final metadata with is_image_only status
             meta.update({
@@ -974,10 +989,14 @@ class FileHandler:
             if not LANGCHAIN_AVAILABLE:
                 # Fallback: need to build chunks list for non-LangChain case
                 chunks = self._create_chunks(text, max_tokens=1000, overlap_tokens=150)
+                chunks_count = len(chunks)
                 async with aiofiles.open(out_path, "w", encoding="utf-8") as f:
                     for chunk in chunks:
                         await f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-                return out_path, len(chunks)
+                # FREE MEMORY: Delete chunks list immediately after writing
+                del chunks
+                gc.collect()
+                return out_path, chunks_count
             
             splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
@@ -987,6 +1006,8 @@ class FileHandler:
             # Split text into chunks (this still creates a list, but it's just strings, not full dicts)
             chunk_texts = splitter.split_text(text)
             
+            # FREE MEMORY: Store total count before processing
+            total_chunks = len(chunk_texts)
             chunks_count = 0
             async with aiofiles.open(out_path, "w", encoding="utf-8") as f:
                 char_position = 0
@@ -1000,13 +1021,17 @@ class FileHandler:
                         "length": chunk_length,
                         "token_estimate": chunk_length // 4,
                         "prev_chunk": i if i > 0 else None,
-                        "next_chunk": i + 2 if i < len(chunk_texts) - 1 else None,
+                        "next_chunk": i + 2 if i < total_chunks - 1 else None,
                         "has_negations": bool(self.NEG_CUES.search(chunk_text)),
                         "type": "text"
                     }
                     await f.write(json.dumps(obj, ensure_ascii=False) + "\n")
                     char_position += chunk_length
                     chunks_count += 1
+            
+            # FREE MEMORY: Delete chunk_texts immediately after writing to disk
+            del chunk_texts
+            gc.collect()
             
             return out_path, chunks_count
             

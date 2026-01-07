@@ -274,6 +274,65 @@ async def startup_background_tasks():
                 except Exception as e:
                     logger.warning(f"Error cleaning markdown files: {e}")
                 
+                # Cleanup ChromaDB vector database (older than 1 hour)
+                # ChromaDB stores document embeddings - should be cleaned up for GDPR compliance
+                try:
+                    import shutil
+                    # Check both possible locations
+                    for vectordb_dir in ["/tmp/chroma", "var/chroma"]:
+                        if os.path.exists(vectordb_dir):
+                            current_time = time.time()
+                            # Clean up ChromaDB database files
+                            for item in os.listdir(vectordb_dir):
+                                item_path = os.path.join(vectordb_dir, item)
+                                try:
+                                    if os.path.isdir(item_path):
+                                        # ChromaDB collection directory
+                                        item_age = current_time - os.path.getctime(item_path)
+                                        if item_age > 3600:  # 1 hour
+                                            shutil.rmtree(item_path)
+                                            logger.debug(f"Cleaned up old ChromaDB collection: {item}")
+                                    elif os.path.isfile(item_path) and item.endswith("_index.json"):
+                                        # Mock mode index files
+                                        item_age = current_time - os.path.getctime(item_path)
+                                        if item_age > 3600:  # 1 hour
+                                            os.remove(item_path)
+                                            logger.debug(f"Cleaned up old ChromaDB index file: {item}")
+                                except Exception as e:
+                                    logger.debug(f"Error cleaning ChromaDB item {item}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning ChromaDB files: {e}")
+                
+                # Cleanup old log files (older than 7 days)
+                # Logs contain technical metadata only, but should be cleaned up for GDPR compliance
+                try:
+                    import shutil
+                    # Check both possible log locations
+                    for log_dir in ["/tmp/logs", "logs"]:
+                        if os.path.exists(log_dir):
+                            current_time = time.time()
+                            max_age_seconds = 7 * 24 * 3600  # 7 days
+                            
+                            for item in os.listdir(log_dir):
+                                item_path = os.path.join(log_dir, item)
+                                try:
+                                    if os.path.isfile(item_path):
+                                        # Check file age
+                                        file_age = current_time - os.path.getctime(item_path)
+                                        if file_age > max_age_seconds:
+                                            os.remove(item_path)
+                                            logger.debug(f"Cleaned up old log file: {item}")
+                                    elif os.path.isdir(item_path):
+                                        # Check directory age (for rotated log directories if any)
+                                        dir_age = current_time - os.path.getctime(item_path)
+                                        if dir_age > max_age_seconds:
+                                            shutil.rmtree(item_path)
+                                            logger.debug(f"Cleaned up old log directory: {item}")
+                                except Exception as e:
+                                    logger.debug(f"Error cleaning log item {item}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning log files: {e}")
+                
                 # Note: Excel exports are kept longer (24 hours) as they may be needed by users
                 # To enable Excel cleanup, uncomment the following block:
                 # try:
@@ -290,7 +349,7 @@ async def startup_background_tasks():
                 # except Exception as e:
                 #     logger.warning(f"Error cleaning export files: {e}")
                 
-                logger.info("✅ Periodic cleanup completed: removed old traces, jobs, and markdown files")
+                logger.info("✅ Periodic cleanup completed: removed old traces, jobs, markdown files, ChromaDB data, and log files")
             except Exception as e:
                 logger.error(f"❌ Periodic cleanup error: {e}")
     
@@ -640,8 +699,11 @@ async def _run_analysis_internal(job_id: str, request: AnalysisRequest, trace_id
                 trace_id=trace_id
             )
             
-            # Clear text from memory after analysis
-            del text_for_analysis
+            # FREE MEMORY: Clear text from memory immediately after analysis (if it was loaded)
+            if 'text_for_analysis' in locals():
+                del text_for_analysis
+                import gc
+                gc.collect()  # Force garbage collection to free memory immediately
             
             jobs[job_id].progress = 90
             jobs[job_id].message = "Analysis complete, finalizing results"

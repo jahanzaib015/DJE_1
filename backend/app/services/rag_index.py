@@ -5,6 +5,7 @@ import re
 import hashlib
 import os
 import uuid
+import gc
 from typing import Dict, List, Any, Optional
 from ..utils.logger import setup_logger
 
@@ -250,6 +251,10 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
             else:
                 chunks = chunk_text(clean_text)
             
+            # FREE MEMORY: Delete clean_text immediately after building chunks
+            del clean_text
+            gc.collect()
+            
             # Process fallback chunks in batches
             for ch in chunks:
                 if isinstance(ch, dict):
@@ -275,9 +280,16 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
                         embeddings=vecs
                     )
                     total_indexed += len(batch_docs)
+                    # FREE MEMORY: Clear batches and embeddings immediately after upsert
                     batch_docs.clear()
                     batch_meta.clear()
                     batch_ids.clear()
+                    del vecs
+                    gc.collect()
+            
+            # FREE MEMORY: Delete chunks list after processing
+            del chunks
+            gc.collect()
         else:
             # Stream from JSONL file
             with open(chunks_path, "r", encoding="utf-8") as f:
@@ -306,9 +318,12 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
                             embeddings=vecs
                         )
                         total_indexed += len(batch_docs)
-                        batch_docs.clear()
-                        batch_meta.clear()
-                        batch_ids.clear()
+                    # FREE MEMORY: Clear batches and embeddings immediately after upsert
+                    batch_docs.clear()
+                    batch_meta.clear()
+                    batch_ids.clear()
+                    del vecs
+                    gc.collect()
         
         # Flush remaining items in batch
         if batch_docs:
@@ -320,6 +335,12 @@ def index_pdf(clean_text_path: str, chunks_path: str, vectordb_dir: str = "/tmp/
                 embeddings=vecs
             )
             total_indexed += len(batch_docs)
+            # FREE MEMORY: Clear final batch
+            batch_docs.clear()
+            batch_meta.clear()
+            batch_ids.clear()
+            del vecs
+            gc.collect()
         
         return {
             "success": True,
