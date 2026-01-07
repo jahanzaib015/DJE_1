@@ -156,17 +156,34 @@ class FileHandler:
             # If we can't check, assume it's not image-only and let normal pipeline handle it
             return False
     
-    async def save_uploaded_file(self, file) -> str:
-        """Save uploaded file and return file path"""
-        # Generate unique filename
-        filename = f"{file.filename}_{int(time.time())}"
+    async def save_uploaded_file(self, file, max_bytes: int = 100 * 1024 * 1024) -> str:
+        """
+        Save UploadFile to disk without loading it all into memory.
+        max_bytes = hard limit to protect RAM/disk (default 100MB).
+        """
+        filename = f"{int(time.time())}_{file.filename}"
         file_path = os.path.join(self.upload_dir, filename)
-        
-        # Save file
-        async with aiofiles.open(file_path, 'wb') as f:
-            content = await file.read()
-            await f.write(content)
-        
+
+        total = 0
+        chunk_size = 1024 * 1024  # 1MB
+
+        async with aiofiles.open(file_path, "wb") as out:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    # cleanup partial file
+                    try:
+                        await out.close()
+                    finally:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    raise ValueError(f"File too large (>{max_bytes} bytes)")
+                await out.write(chunk)
+
+        await file.close()
         return file_path
     
     async def extract_pdf_text(self, file_path: str, max_pages: Optional[int] = None) -> str:
@@ -298,7 +315,7 @@ class FileHandler:
                     logger.info(f"✅ OCR extraction successful: {len(ocr_clean_text)} chars (vs {len(clean_text)} from regular extraction)")
                     clean_text = ocr_clean_text
                     meta["ocr_used"] = True
-                    methods_used.append({"method": "ocr_preferred", "char_count": len(ocr_clean_text), "success": True, "reason": "tables/images detected"})
+                    extraction_methods.append({"method": "ocr_preferred", "char_count": len(ocr_clean_text), "success": True, "reason": "tables/images detected"})
                 else:
                     logger.info(f"⚠️ OCR extraction didn't improve text quality, using regular extraction")
             
