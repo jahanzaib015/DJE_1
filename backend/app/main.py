@@ -381,12 +381,22 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root():
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    """Root endpoint for health checks - responds to GET and HEAD with 200"""
+    return {"status": "ok"}
+
+@app.get("/index.html", response_class=HTMLResponse)
+async def read_root_html():
     """Serve the main HTML page"""
     static_path = os.path.join(os.path.dirname(__file__), "..", "static", "index.html")
     with open(static_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
+
+@app.api_route("/healthz", methods=["GET", "HEAD"])
+async def healthz():
+    """Health check endpoint for Render - responds to GET and HEAD with 200"""
+    return {"ok": True}
 
 @app.get("/health")
 async def health_check():

@@ -330,4 +330,3 @@ def _suppress_rotation_errors(self, record):
 
 # Monkey-patch the Handler class to use our custom error handler
 logging.Handler.handleError = _suppress_rotation_errors
-
