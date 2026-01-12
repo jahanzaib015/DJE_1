@@ -415,7 +415,6 @@ Recognize these as the SAME instrument types (use the exact name from document):
         ) as client:
             payload = {
                 "model": model,
-                "store": False,  # Prevent OpenAI from storing data for GDPR compliance
                 "messages": [
                     {
                         "role": "system",
