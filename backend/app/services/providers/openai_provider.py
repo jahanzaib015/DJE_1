@@ -563,9 +563,9 @@ Return ONLY valid JSON matching the required schema."""
                 # Other models can use temperature 0 for deterministic responses
                 payload["temperature"] = 0
             
-            # Use correct parameter name based on model
-            # Newer models (gpt-5, gpt-5.1, gpt-5.2, gpt-4.1, o1, etc.) use max_completion_tokens
-            # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
+            # Use correct parameter based on model
+            # GPT-5/5.1/5.2 require max_completion_tokens (newer models)
+            # Older models use max_tokens
             if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
                 # GPT-5/5.1/5.2 have large context windows - use higher limit to avoid truncation
                 payload["max_completion_tokens"] = 8000

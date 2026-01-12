@@ -665,7 +665,6 @@ Before finishing, you MUST verify:
             # Use new OpenAI client approach with optimized settings for speed
             # GPT-4 has 8k context window, enhanced prompts are longer, so reduce max_tokens further
             # Reserve ~2000 tokens for completion to leave room for input (~5500 tokens with enhanced prompts)
-            # o1 models use max_completion_tokens instead of max_tokens
             api_params = {
                 "model": model,
                 "top_p": 1,  # Conservative mode
@@ -686,9 +685,9 @@ Before finishing, you MUST verify:
                 # Other models can use temperature 0 for deterministic responses
                 api_params["temperature"] = 0  # Deterministic, evidence-based mode
             
-            # Use correct parameter name based on model
-            # Newer models (gpt-5, gpt-5.1, gpt-5.2, gpt-4.1, o1, etc.) use max_completion_tokens
-            # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
+            # Use correct parameter based on model
+            # GPT-5/5.1/5.2 require max_completion_tokens (newer models)
+            # Older models use max_tokens
             if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
                 # GPT-5/5.1/5.2 have large context windows - use higher limit to avoid truncation
                 api_params["max_completion_tokens"] = 8000
@@ -951,7 +950,8 @@ Return ONLY valid JSON:
             else:
                 api_params["temperature"] = 0
             
-            # Use correct parameter name based on model
+            # Use correct parameter based on model
+            # GPT-5/5.1/5.2 require max_completion_tokens (newer models)
             if model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
                 api_params["max_completion_tokens"] = 8000
             elif model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-4.1"]:
@@ -1331,11 +1331,12 @@ Return ONLY a valid JSON array with all extracted rows."""
                 }
                 
                 # Use correct parameter based on model
-                # Newer models (gpt-5, gpt-5.1, o1, etc.) use max_completion_tokens
-                # Older models (gpt-4o, gpt-4o-mini, etc.) use max_tokens
+                # GPT-5.2 (vision_model) requires max_completion_tokens
                 # Increased limit to handle documents with many rows (up to 100+ instruments)
-                if vision_model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-4.1"]:
+                if vision_model in ["gpt-5", "gpt-5.1", "gpt-5.2"]:
                     api_params["max_completion_tokens"] = 8000  # Increased from 4000 to handle more rows
+                elif vision_model in ["o1", "o1-mini", "o1-preview", "o1-2024-09-12", "gpt-4.1"]:
+                    api_params["max_completion_tokens"] = 8000
                 else:
                     api_params["max_tokens"] = 8000  # Increased from 4000 to handle more rows
                 
